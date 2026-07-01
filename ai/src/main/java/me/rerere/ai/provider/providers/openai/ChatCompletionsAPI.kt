@@ -18,6 +18,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonArrayBuilder
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.add
@@ -637,42 +638,12 @@ class ChatCompletionsAPI(
 
                     // 紧跟 tool 结果消息
                     group.tools.forEach { tool ->
-                        val textOutput = tool.output.filterIsInstance<UIMessagePart.Text>().joinToString("\n") { it.text }
-                        val imageOutput = if (supportsImage) tool.output.filterIsInstance<UIMessagePart.Image>() else emptyList()
-
                         add(buildJsonObject {
                             put("role", "tool")
                             put("name", tool.toolName)
                             put("tool_call_id", tool.toolCallId)
-                            put("content", textOutput)
+                            put("content", tool.toToolResultContent())
                         })
-
-                        // If tool output contains images, inject a user message with the images
-                        // so the AI model can "see" them (tool result content only supports text)
-                        if (imageOutput.isNotEmpty()) {
-                            add(buildJsonObject {
-                                put("role", "user")
-                                putJsonArray("content") {
-                                    add(buildJsonObject {
-                                        put("type", "text")
-                                        put("text", "[Tool ${tool.toolName} returned an image]")
-                                    })
-                                    imageOutput.forEach { imagePart ->
-                                        add(buildJsonObject {
-                                            imagePart.encodeBase64().onSuccess { encodedImage ->
-                                                put("type", "image_url")
-                                                put("image_url", buildJsonObject {
-                                                    put("url", encodedImage.base64)
-                                                })
-                                            }.onFailure {
-                                                put("type", "text")
-                                                put("text", "[Image encoding failed: ${it.message}]")
-                                            }
-                                        })
-                                    }
-                                }
-                            })
-                        }
                     }
                 }
             }
@@ -818,6 +789,73 @@ class ChatCompletionsAPI(
             }
         })
     }
+
+    private fun UIMessagePart.Tool.toToolResultContent(): JsonElement =
+        if (output.none { it is UIMessagePart.Image || it is UIMessagePart.Video }) {
+            JsonPrimitive(output.filterIsInstance<UIMessagePart.Text>().joinToString("\n") { it.text })
+        } else {
+            buildJsonArray {
+                output.forEach { part ->
+                    when (part) {
+                        is UIMessagePart.Text -> {
+                            if (part.text.isNotBlank()) {
+                                add(buildJsonObject {
+                                    put("type", "text")
+                                    put("text", part.text)
+                                })
+                            }
+                        }
+
+                        is UIMessagePart.Image -> {
+                            add(buildJsonObject {
+                                part.encodeBase64().onSuccess { encodedImage ->
+                                    put("type", "image_url")
+                                    put("image_url", buildJsonObject {
+                                        put("url", encodedImage.base64)
+                                    })
+                                }.onFailure {
+                                    Log.w(TAG, "encode tool result image failed: ${part.url}", it)
+                                    put("type", "text")
+                                    put("text", "Error: Failed to encode image to base64")
+                                }
+                            })
+                        }
+
+                        is UIMessagePart.Video -> {
+                            add(buildJsonObject {
+                                part.encodeBase64().onSuccess { encodedVideo ->
+                                    put("type", "video_url")
+                                    put("video_url", buildJsonObject {
+                                        put("url", encodedVideo)
+                                    })
+                                }.onFailure {
+                                    Log.w(TAG, "encode tool result video failed: ${part.url}", it)
+                                    put("type", "text")
+                                    put("text", "Error: Failed to encode video to base64")
+                                }
+                            })
+                        }
+
+                        is UIMessagePart.Audio -> {
+                            add(buildJsonObject {
+                                part.encodeBase64().onSuccess { encodedAudio ->
+                                    put("type", "audio_url")
+                                    put("audio_url", buildJsonObject {
+                                        put("url", encodedAudio)
+                                    })
+                                }.onFailure {
+                                    Log.w(TAG, "encode tool result audio failed: ${part.url}", it)
+                                    put("type", "text")
+                                    put("text", "Error: Failed to encode audio to base64")
+                                }
+                            })
+                        }
+
+                        else -> {}
+                    }
+                }
+            }
+        }
 
     private fun parseMessage(jsonObject: JsonObject): UIMessage {
         val role = MessageRole.valueOf(
