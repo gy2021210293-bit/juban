@@ -111,7 +111,7 @@ internal fun FilesPicker(
             modifier = Modifier
                 .fillMaxWidth()
                 .horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
         ) {
             TakePicButton(
                 modifier = Modifier.width(72.dp),
