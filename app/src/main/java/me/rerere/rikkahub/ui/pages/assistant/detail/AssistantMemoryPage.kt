@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -95,7 +96,7 @@ fun AssistantMemoryPage(id: String) {
         containerColor = CustomColors.topBarColors.containerColor,
     ) { innerPadding ->
         AssistantMemoryContent(
-            modifier = Modifier.padding(innerPadding),
+            innerPadding = innerPadding,
             assistant = assistant,
             memories = memories,
             externalMemories = externalMemories,
@@ -110,7 +111,7 @@ fun AssistantMemoryPage(id: String) {
 
 @Composable
 private fun AssistantMemoryContent(
-    modifier: Modifier = Modifier,
+    innerPadding: PaddingValues,
     assistant: Assistant,
     memories: List<AssistantMemory>,
     externalMemories: List<ExternalMemory>,
@@ -174,10 +175,11 @@ private fun AssistantMemoryContent(
     }
 
     Column(
-        modifier = modifier
+        modifier = Modifier
             .fillMaxSize()
-            .padding(16.dp)
             .verticalScroll(rememberScrollState())
+            .padding(horizontal = 16.dp)
+            .padding(innerPadding)
             .imePadding(),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
