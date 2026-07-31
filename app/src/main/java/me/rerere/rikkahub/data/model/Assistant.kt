@@ -22,6 +22,8 @@ data class Assistant(
     val chatModelId: Uuid? = null, // 如果为null, 使用全局默认模型
     val name: String = "",
     val avatar: Avatar = Avatar.Dummy,
+    val patAction: String = "拍了拍",
+    val patSuffix: String = "",
     val useAssistantAvatar: Boolean = false, // 使用助手头像替代模型头像
     val tags: List<Uuid> = emptyList(),
     val systemPrompt: String = "",
@@ -42,6 +44,7 @@ data class Assistant(
     val customBodies: List<CustomBody> = emptyList(),
     val mcpServers: Set<Uuid> = emptySet(),
     val localTools: List<LocalToolOption> = listOf(LocalToolOption.TimeInfo),
+    val imageGenerationSystemPrompt: String = "",
     val workspaceId: Uuid? = null,
     val background: String? = null,
     val backgroundOpacity: Float = 1.0f,

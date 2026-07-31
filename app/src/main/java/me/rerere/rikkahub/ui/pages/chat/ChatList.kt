@@ -142,6 +142,8 @@ fun ChatList(
     onToolAnswer: ((toolCallId: String, answer: String) -> Unit)? = null,
     onToggleFavorite: ((MessageNode) -> Unit)? = null,
     onConversationSystemPromptChange: ((String?) -> Unit)? = null,
+    onPatAssistant: (() -> Unit)? = null,
+    onGeneratedImageRetry: (UIMessage) -> Unit = {},
 ) {
     AnimatedContent(
         targetState = previewMode,
@@ -184,6 +186,8 @@ fun ChatList(
                 onToolAnswer = onToolAnswer,
                 onToggleFavorite = onToggleFavorite,
                 onConversationSystemPromptChange = onConversationSystemPromptChange,
+                onPatAssistant = onPatAssistant,
+                onGeneratedImageRetry = onGeneratedImageRetry,
             )
         }
     }
@@ -214,6 +218,8 @@ private fun ChatListNormal(
     onToolAnswer: ((toolCallId: String, answer: String) -> Unit)? = null,
     onToggleFavorite: ((MessageNode) -> Unit)? = null,
     onConversationSystemPromptChange: ((String?) -> Unit)? = null,
+    onPatAssistant: (() -> Unit)? = null,
+    onGeneratedImageRetry: (UIMessage) -> Unit = {},
 ) {
     val scope = rememberCoroutineScope()
     val loadingState by rememberUpdatedState(loading)
@@ -369,6 +375,8 @@ private fun ChatListNormal(
                             onClearTranslation = onClearTranslation,
                             onToolApproval = onToolApproval,
                             onToolAnswer = onToolAnswer,
+                            onPatAssistant = onPatAssistant,
+                            onGeneratedImageRetry = { onGeneratedImageRetry(node.currentMessage) },
                             lastMessage = index == displayNodes.lastIndex,
                         )
                     }

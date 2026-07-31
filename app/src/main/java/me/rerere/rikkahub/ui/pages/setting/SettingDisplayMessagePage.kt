@@ -19,6 +19,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.LargeFlexibleTopAppBar
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
@@ -117,6 +118,34 @@ fun SettingDisplayMessagePage(vm: SettingVM = koinViewModel()) {
                                     updateDisplaySetting(displaySetting.copy(showUserAvatar = it))
                                 }
                             )
+                        },
+                    )
+                    item(
+                        headlineContent = { Text("AI 对我的互动") },
+                        supportingContent = {
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text("AI 未传动作或内容时使用这里的默认值")
+                                OutlinedTextField(
+                                    value = displaySetting.userPatAction,
+                                    onValueChange = {
+                                        updateDisplaySetting(displaySetting.copy(userPatAction = it))
+                                    },
+                                    label = { Text("默认动作") },
+                                    placeholder = { Text("例如：戳一戳") },
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                                OutlinedTextField(
+                                    value = displaySetting.userPatSuffix,
+                                    onValueChange = {
+                                        updateDisplaySetting(displaySetting.copy(userPatSuffix = it))
+                                    },
+                                    label = { Text("默认内容") },
+                                    placeholder = { Text("例如：的小脑袋") },
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                            }
                         },
                     )
                     item(

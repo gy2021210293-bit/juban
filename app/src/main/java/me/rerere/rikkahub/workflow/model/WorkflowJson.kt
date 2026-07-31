@@ -159,6 +159,31 @@ object WorkflowJson {
             actions += WorkflowAction(tool = toolName, args = args, timeoutSeconds = timeout)
         }
 
+        val aiWake = when (val wakeEl = obj["ai_wake"]) {
+            null -> null
+            is JsonObject -> {
+                val prompt = (wakeEl["prompt"] as? JsonPrimitive)?.contentOrNull
+                    ?: return ParseResult.Err("invalid_ai_wake", "ai_wake.prompt is required")
+                if (prompt.isBlank()) {
+                    return ParseResult.Err("invalid_ai_wake", "ai_wake.prompt must be non-blank")
+                }
+                if (prompt.length > WorkflowConstants.MAX_AI_WAKE_PROMPT_LENGTH) {
+                    return ParseResult.Err(
+                        "invalid_ai_wake",
+                        "ai_wake.prompt must be ≤ ${WorkflowConstants.MAX_AI_WAKE_PROMPT_LENGTH} chars",
+                    )
+                }
+                WorkflowAiWake(
+                    prompt = prompt.trim(),
+                    includeActionOutputs = (wakeEl["include_action_outputs"] as? JsonPrimitive)
+                        ?.booleanOrNull ?: true,
+                    allowAllToolsAndPlugins = (wakeEl["allow_all_tools_and_plugins"] as? JsonPrimitive)
+                        ?.booleanOrNull ?: false,
+                )
+            }
+            else -> return ParseResult.Err("invalid_ai_wake", "ai_wake must be an object")
+        }
+
         val cooldown = obj["cooldown_seconds"]?.jsonPrimitive?.intOrNull ?: 0
         if (cooldown < 0 || cooldown > WorkflowConstants.MAX_COOLDOWN_S) {
             return ParseResult.Err("invalid_cooldown",
@@ -189,6 +214,7 @@ object WorkflowJson {
             trigger = trigger,
             conditions = conditions,
             actions = actions,
+            aiWake = aiWake,
             cooldownSeconds = cooldown,
             maxRunsPerDay = maxRunsPerDay,
             createdAtMs = obj["created_at_ms"]?.jsonPrimitive?.contentOrNull?.toLongOrNull() ?: now,
@@ -218,6 +244,16 @@ object WorkflowJson {
                     })
                 }
             })
+            if (definition.aiWake != null) {
+                put("ai_wake", buildJsonObject {
+                    put("prompt", JsonPrimitive(definition.aiWake.prompt))
+                    put("include_action_outputs", JsonPrimitive(definition.aiWake.includeActionOutputs))
+                    put(
+                        "allow_all_tools_and_plugins",
+                        JsonPrimitive(definition.aiWake.allowAllToolsAndPlugins),
+                    )
+                })
+            }
             put("cooldown_seconds", JsonPrimitive(definition.cooldownSeconds))
             if (definition.maxRunsPerDay != null) {
                 put("max_runs_per_day", JsonPrimitive(definition.maxRunsPerDay))
@@ -260,6 +296,18 @@ object WorkflowJson {
             WorkflowAction(tool = toolName, args = args, timeoutSeconds = timeout)
         }
         if (actions.isEmpty()) return null
+        val aiWake = (obj["ai_wake"] as? JsonObject)?.let { wake ->
+            val prompt = (wake["prompt"] as? JsonPrimitive)?.contentOrNull
+                ?.takeIf { it.isNotBlank() }
+                ?: return@let null
+            WorkflowAiWake(
+                prompt = prompt.take(WorkflowConstants.MAX_AI_WAKE_PROMPT_LENGTH),
+                includeActionOutputs = (wake["include_action_outputs"] as? JsonPrimitive)
+                    ?.booleanOrNull ?: true,
+                allowAllToolsAndPlugins = (wake["allow_all_tools_and_plugins"] as? JsonPrimitive)
+                    ?.booleanOrNull ?: false,
+            )
+        }
         val cooldown = obj["cooldown_seconds"]?.jsonPrimitive?.intOrNull ?: 0
         val maxRunsPerDay = obj["max_runs_per_day"]?.jsonPrimitive?.intOrNull
         val id = obj["id"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
@@ -273,6 +321,7 @@ object WorkflowJson {
             trigger = triggerSpec,
             conditions = conditions,
             actions = actions,
+            aiWake = aiWake,
             cooldownSeconds = cooldown,
             maxRunsPerDay = maxRunsPerDay,
             createdAtMs = obj["created_at_ms"]?.jsonPrimitive?.contentOrNull?.toLongOrNull() ?: now,

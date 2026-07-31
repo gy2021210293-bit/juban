@@ -167,6 +167,12 @@ class PluginViewModel(
         }
     }
 
+    fun setPluginQuickEntryVisibility(pluginId: String, visible: Boolean) {
+        viewModelScope.launch {
+            pluginManager.setPluginQuickEntryVisibility(pluginId, visible)
+        }
+    }
+
     /**
      * 更新插件配置
      */

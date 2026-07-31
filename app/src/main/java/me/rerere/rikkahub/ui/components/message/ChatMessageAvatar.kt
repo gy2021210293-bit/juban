@@ -8,6 +8,7 @@ package me.rerere.rikkahub.ui.components.message
 
 import android.graphics.BitmapFactory
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -23,8 +24,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import kotlinx.datetime.toJavaLocalDateTime
@@ -129,6 +132,7 @@ fun ChatMessageAssistantAvatar(
     model: Model?,
     assistant: Assistant?,
     modifier: Modifier = Modifier,
+    onPatAssistant: (() -> Unit)? = null,
 ) {
     val settings = LocalSettings.current
     val showIcon = settings.displaySetting.showModelIcon
@@ -141,7 +145,9 @@ fun ChatMessageAssistantAvatar(
         ) {
             if (useAssistantAvatar) {
                 if (showIcon) {
-                    Box(contentAlignment = Alignment.Center) {
+                    Box(
+                        contentAlignment = Alignment.Center,
+                    ) {
                         UIAvatar(
                             name = assistant.name,
                             modifier = Modifier.size(32.dp),
@@ -155,6 +161,7 @@ fun ChatMessageAssistantAvatar(
                             scale = settings.displaySetting.aiAvatarFrameScale,
                             baseSize = 32f,
                         )
+                        PatAvatarTouchTarget(onPatAssistant)
                     }
                 }
                 Column(
@@ -178,7 +185,9 @@ fun ChatMessageAssistantAvatar(
                 }
             } else if (model != null) {
                 if (showIcon) {
-                    Box(contentAlignment = Alignment.Center) {
+                    Box(
+                        contentAlignment = Alignment.Center,
+                    ) {
                         AutoAIIcon(
                             name = model.modelId,
                             modifier = Modifier.size(32.dp),
@@ -191,6 +200,7 @@ fun ChatMessageAssistantAvatar(
                             scale = settings.displaySetting.aiAvatarFrameScale,
                             baseSize = 32f,
                         )
+                        PatAvatarTouchTarget(onPatAssistant)
                     }
                 }
                 Column(
@@ -213,4 +223,21 @@ fun ChatMessageAssistantAvatar(
             }
         }
     }
+}
+
+@Composable
+private fun PatAvatarTouchTarget(onPatAssistant: (() -> Unit)?) {
+    if (onPatAssistant == null) return
+    val hapticFeedback = LocalHapticFeedback.current
+    Box(
+        modifier = Modifier
+            .size(40.dp)
+            .combinedClickable(
+                onClick = {},
+                onDoubleClick = {
+                    hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+                    onPatAssistant()
+                },
+            ),
+    )
 }

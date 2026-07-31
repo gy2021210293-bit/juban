@@ -104,6 +104,16 @@ fun workflowCreateTool(
         ACTIONS: each is { tool: <existing tool name>, args: { ... }, timeout_seconds?: int }.
         Use any tool currently registered for this assistant. workflow_run is NOT allowed
         as an action (no chaining in v1).
+
+        OPTIONAL AI WAKE: add
+          ai_wake: {
+            prompt: "<how the assistant should handle the completed data flow>",
+            include_action_outputs: true|false (default true),
+            allow_all_tools_and_plugins: true|false (default false)
+          }
+        After every action succeeds, this wakes the authoring assistant and optionally feeds
+        it the action outputs. Full background tool/plugin access is a separate explicit grant
+        and is shown in the user's workflow approval prompt.
     """.trimIndent(),
     parameters = {
         InputSchema.Obj(
@@ -112,7 +122,8 @@ fun workflowCreateTool(
                     put("type", "object")
                     put("description", "The workflow definition. Required keys: name, trigger, actions. " +
                         "Optional: description, enabled (default true), conditions (array), " +
-                        "cooldown_seconds (default 0), max_runs_per_day (default unlimited), id.")
+                        "ai_wake, cooldown_seconds (default 0), " +
+                        "max_runs_per_day (default unlimited), id.")
                 })
             },
             required = listOf("definition"),
@@ -179,6 +190,7 @@ fun workflowListTool(repository: WorkflowRepository): Tool = Tool(
                         put("name", e.name)
                         put("enabled", e.enabled)
                         put("trigger_type", triggerTypeKey(def))
+                        put("wakes_ai", def.aiWake != null)
                         put("last_run_at_ms", JsonPrimitive(e.lastRunAtMs?.toString()))
                         put("last_run_status", JsonPrimitive(e.lastRunStatus))
                     })

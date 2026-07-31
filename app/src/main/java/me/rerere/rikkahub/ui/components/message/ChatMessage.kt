@@ -96,6 +96,10 @@ import me.rerere.hugeicons.stroke.PauseCircle
 import me.rerere.hugeicons.stroke.Video01
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.Screen
+import me.rerere.rikkahub.data.ai.GeneratedImageStatus
+import me.rerere.rikkahub.data.ai.generatedImageRequestOrNull
+import me.rerere.rikkahub.data.ai.generatedImageStatus
+import me.rerere.rikkahub.data.ai.tools.patDisplayTextOrNull
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.AssistantAffectScope
 import me.rerere.rikkahub.data.model.MessageNode
@@ -143,8 +147,21 @@ fun ChatMessage(
     onClearTranslation: (UIMessage) -> Unit = {},
     onToolApproval: ((toolCallId: String, approved: Boolean, reason: String) -> Unit)? = null,
     onToolAnswer: ((toolCallId: String, answer: String) -> Unit)? = null,
+    onPatAssistant: (() -> Unit)? = null,
+    onGeneratedImageRetry: (() -> Unit)? = null,
 ) {
     val message = node.messages[node.selectIndex]
+    val patDisplayText = message.parts
+        .filterIsInstance<UIMessagePart.Text>()
+        .singleOrNull()
+        ?.patDisplayTextOrNull()
+    if (patDisplayText != null) {
+        PatEventText(
+            text = patDisplayText,
+            modifier = modifier.fillMaxWidth(),
+        )
+        return
+    }
     val settings = LocalDisplaySettings.current
     val textStyle = LocalTextStyle.current.copy(
         fontSize = LocalTextStyle.current.fontSize * settings.fontSizeRatio,
@@ -186,7 +203,8 @@ fun ChatMessage(
                     model = model,
                     assistant = assistant,
                     loading = loading,
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier.weight(1f),
+                    onPatAssistant = onPatAssistant,
                 )
                 ChatMessageUserAvatar(
                     message = message,
@@ -207,6 +225,7 @@ fun ChatMessage(
                 onToolApproval = onToolApproval,
                 onToolAnswer = onToolAnswer,
                 onUserMessageClick = if (message.role == MessageRole.USER) onEdit else null,
+                onGeneratedImageRetry = onGeneratedImageRetry,
             )
  
             message.translation?.let { translation ->
@@ -304,6 +323,7 @@ private fun MessagePartsBlock(
     onToolApproval: ((toolCallId: String, approved: Boolean, reason: String) -> Unit)? = null,
     onToolAnswer: ((toolCallId: String, answer: String) -> Unit)? = null,
     onUserMessageClick: (() -> Unit)? = null,
+    onGeneratedImageRetry: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val contentColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.65f)
@@ -560,24 +580,35 @@ private fun MessagePartsBlock(
                     }
  
                     is UIMessagePart.Image -> {
-                        val isImageLoading =
-                            part.url.isBlank() || part.url.matches(Regex("^data:image/[^;]*;base64,\\s*$"))
-                        if (isImageLoading) {
-                            Box(
-                                modifier = Modifier
-                                    .size(72.dp)
-                                    .clip(MaterialTheme.shapes.medium)
-                                    .background(MaterialTheme.colorScheme.surfaceVariant)
-                                    .shimmer(isLoading = true)
+                        val generatedRequest = part.generatedImageRequestOrNull()
+                        if (generatedRequest != null) {
+                            GeneratedImageCard(
+                                image = part,
+                                description = generatedRequest.description,
+                                status = part.generatedImageStatus() ?: GeneratedImageStatus.PENDING,
+                                error = part.metadata?.get("error")?.jsonPrimitive?.content.orEmpty(),
+                                onRetry = onGeneratedImageRetry,
                             )
                         } else {
-                            ZoomableAsyncImage(
-                                model = part.url,
-                                contentDescription = null,
-                                modifier = Modifier
-                                    .clip(MaterialTheme.shapes.medium)
-                                    .height(72.dp)
-                            )
+                            val isImageLoading =
+                                part.url.isBlank() || part.url.matches(Regex("^data:image/[^;]*;base64,\\s*$"))
+                            if (isImageLoading) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(72.dp)
+                                        .clip(MaterialTheme.shapes.medium)
+                                        .background(MaterialTheme.colorScheme.surfaceVariant)
+                                        .shimmer(isLoading = true)
+                                )
+                            } else {
+                                ZoomableAsyncImage(
+                                    model = part.url,
+                                    contentDescription = null,
+                                    modifier = Modifier
+                                        .clip(MaterialTheme.shapes.medium)
+                                        .height(72.dp)
+                                )
+                            }
                         }
                     }
  
@@ -641,7 +672,13 @@ private fun MessagePartsBlock(
                             }
                         }
                     }
- 
+
+                    is UIMessagePart.Tool -> {
+                        part.patDisplayTextOrNull()?.let { displayText ->
+                            PatEventText(text = displayText)
+                        }
+                    }
+
                     else -> {
                         // Skip unknown part types (e.g., deprecated ToolCall, ToolResult, Search)
                     }
@@ -712,6 +749,74 @@ private fun MessagePartsBlock(
     // 仅在归属工作区的 assistant 消息中渲染, 不影响用户消息和其它布局。
     if (role == MessageRole.ASSISTANT) {
         EditedFilesList(parts = parts, assistant = assistant)
+    }
+}
+
+@Composable
+private fun GeneratedImageCard(
+    image: UIMessagePart.Image,
+    description: String,
+    status: GeneratedImageStatus,
+    error: String,
+    onRetry: (() -> Unit)?,
+) {
+    Surface(
+        shape = MaterialTheme.shapes.large,
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            if (status == GeneratedImageStatus.SUCCEEDED && image.url.isNotBlank()) {
+                ZoomableAsyncImage(
+                    model = image.url,
+                    contentDescription = description,
+                    modifier = Modifier.clip(MaterialTheme.shapes.medium).height(240.dp),
+                )
+            } else {
+                Box(
+                    modifier = Modifier.fillMaxWidth().height(120.dp)
+                        .clip(MaterialTheme.shapes.medium)
+                        .background(MaterialTheme.colorScheme.surfaceVariant)
+                        .shimmer(isLoading = status == GeneratedImageStatus.PENDING),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(if (status == GeneratedImageStatus.PENDING) "正在生成图片…" else "图片生成失败")
+                }
+            }
+            Text(description, style = MaterialTheme.typography.bodyMedium)
+            if (status == GeneratedImageStatus.FAILED && error.isNotBlank()) {
+                Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            }
+            if (status == GeneratedImageStatus.FAILED && onRetry != null) {
+                TextButton(onClick = onRetry) { Text("重试") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PatEventText(
+    text: String,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier.padding(vertical = 4.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Surface(
+            color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.75f),
+            shape = RoundedCornerShape(50),
+        ) {
+            Text(
+                text = text,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+            )
+        }
     }
 }
  
@@ -1036,4 +1141,3 @@ internal fun VoiceMessageBubble(
         }
     }
 }
- 

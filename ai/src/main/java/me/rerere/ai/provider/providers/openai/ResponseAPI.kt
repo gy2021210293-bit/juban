@@ -439,15 +439,20 @@ class ResponseAPI(
     private fun JsonArrayBuilder.addUserItems(message: UIMessage) {
         val contentParts = message.parts.filter { it is UIMessagePart.Text || it is UIMessagePart.Image }
         if (contentParts.isNotEmpty()) {
-            addContentItem(message.role, contentParts)
+            addContentItem(message.role, contentParts, message.metadata)
         }
     }
 
-    private fun JsonArrayBuilder.addContentItem(role: MessageRole, parts: List<UIMessagePart>) {
+    private fun JsonArrayBuilder.addContentItem(
+        role: MessageRole,
+        parts: List<UIMessagePart>,
+        metadata: JsonObject? = null,
+    ) {
         if (parts.isEmpty()) return
 
         add(buildJsonObject {
             put("role", JsonPrimitive(role.name.lowercase()))
+            metadata?.let { put("metadata", it) }
 
             if (parts.isOnlyTextPart()) {
                 put("content", (parts.first() as UIMessagePart.Text).text)

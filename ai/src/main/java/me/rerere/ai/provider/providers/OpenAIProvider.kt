@@ -33,6 +33,7 @@ import me.rerere.ai.ui.ImageGenerationItem
 import me.rerere.ai.ui.ImageGenerationResult
 import me.rerere.ai.ui.MessageChunk
 import me.rerere.ai.ui.UIMessage
+import me.rerere.ai.ui.sanitizeGeneratedImagesForProvider
 import me.rerere.ai.util.KeyRoulette
 import me.rerere.ai.util.json
 import me.rerere.ai.util.mergeCustomBody
@@ -121,13 +122,13 @@ class OpenAIProvider(
     ): Flow<MessageChunk> = if (providerSetting.useResponseApi) {
         responseAPI.streamText(
             providerSetting = providerSetting,
-            messages = messages,
+            messages = messages.sanitizeGeneratedImagesForProvider(),
             params = params
         )
     } else {
         chatCompletionsAPI.streamText(
             providerSetting = providerSetting,
-            messages = messages,
+            messages = messages.sanitizeGeneratedImagesForProvider(),
             params = params
         )
     }
@@ -139,13 +140,13 @@ class OpenAIProvider(
     ): MessageChunk = if (providerSetting.useResponseApi) {
         responseAPI.generateText(
             providerSetting = providerSetting,
-            messages = messages,
+            messages = messages.sanitizeGeneratedImagesForProvider(),
             params = params
         )
     } else {
         chatCompletionsAPI.generateText(
             providerSetting = providerSetting,
-            messages = messages,
+            messages = messages.sanitizeGeneratedImagesForProvider(),
             params = params
         )
     }

@@ -186,7 +186,8 @@ val dataSourceModule = module {
             memoryRepo = get(),
             conversationRepo = get(),
             aiLoggingManager = get(),
-            memoryBankService = get()
+            memoryBankService = get(),
+            dynamicContextProvider = get(),
         )
     }
 

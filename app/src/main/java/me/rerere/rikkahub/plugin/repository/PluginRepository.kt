@@ -28,6 +28,7 @@ import kotlin.uuid.Uuid
 @Serializable
 data class PluginSettingsExport(
     val enabled: Map<String, Boolean> = emptyMap(),
+    val quickEntries: Map<String, Boolean> = emptyMap(),
     val configs: Map<String, Map<String, JsonElement>> = emptyMap(),
     val folders: List<PluginFolder> = emptyList(),
     val assignments: Map<String, String> = emptyMap(),
@@ -93,6 +94,24 @@ class PluginRepository(
     }
 
     /**
+     * 获取插件快捷入口显式设置；null 表示尚未初始化。
+     */
+    suspend fun getPluginQuickEntryVisibility(pluginId: String): Boolean? {
+        return context.dataStore.data.map { prefs ->
+            prefs[booleanPreferencesKey("plugin_quick_entry_$pluginId")]
+        }.first()
+    }
+
+    /**
+     * 设置插件是否显示在主聊天页快捷入口。
+     */
+    suspend fun setPluginQuickEntryVisibility(pluginId: String, visible: Boolean) {
+        context.dataStore.edit { prefs ->
+            prefs[booleanPreferencesKey("plugin_quick_entry_$pluginId")] = visible
+        }
+    }
+
+    /**
      * 保存插件信息（初始化时调用）
      */
     suspend fun savePlugin(pluginId: String) {
@@ -114,6 +133,10 @@ class PluginRepository(
             if (prefs[enabledKey] == null) {
                 prefs[enabledKey] = pluginInfo.isEnabled
             }
+            val quickEntryKey = booleanPreferencesKey("plugin_quick_entry_${pluginInfo.manifest.id}")
+            if (prefs[quickEntryKey] == null) {
+                prefs[quickEntryKey] = pluginInfo.isEnabled
+            }
 
             // 保存配置
             if (pluginInfo.config.isNotEmpty()) {
@@ -129,6 +152,7 @@ class PluginRepository(
     suspend fun removePlugin(pluginId: String) {
         context.dataStore.edit { prefs ->
             prefs.remove(booleanPreferencesKey("plugin_enabled_$pluginId"))
+            prefs.remove(booleanPreferencesKey("plugin_quick_entry_$pluginId"))
             prefs.remove(stringPreferencesKey("plugin_config_$pluginId"))
         }
     }
@@ -143,17 +167,22 @@ class PluginRepository(
     }
 
     /**
-     * 导出所有插件相关配置（启用状态、配置、文件夹、插件-文件夹关联）
+     * 导出所有插件相关配置（启用状态、快捷入口、配置、文件夹、插件-文件夹关联）
      */
     suspend fun exportPluginSettings(): PluginSettingsExport {
         return context.dataStore.data.map { prefs ->
             val enabledMap = mutableMapOf<String, Boolean>()
+            val quickEntryMap = mutableMapOf<String, Boolean>()
             val configMap = mutableMapOf<String, Map<String, JsonElement>>()
             prefs.asMap().keys.forEach { key ->
                 when {
                     key.name.startsWith("plugin_enabled_") -> {
                         val pluginId = key.name.removePrefix("plugin_enabled_")
                         (prefs[key] as? Boolean)?.let { enabledMap[pluginId] = it }
+                    }
+                    key.name.startsWith("plugin_quick_entry_") -> {
+                        val pluginId = key.name.removePrefix("plugin_quick_entry_")
+                        (prefs[key] as? Boolean)?.let { quickEntryMap[pluginId] = it }
                     }
                     key.name.startsWith("plugin_config_") -> {
                         val pluginId = key.name.removePrefix("plugin_config_")
@@ -168,6 +197,7 @@ class PluginRepository(
             }
             PluginSettingsExport(
                 enabled = enabledMap,
+                quickEntries = quickEntryMap,
                 configs = configMap,
                 folders = getFolders(),
                 assignments = getFolderAssignments()
@@ -182,6 +212,9 @@ class PluginRepository(
         context.dataStore.edit { prefs ->
             export.enabled.forEach { (pluginId, enabled) ->
                 prefs[booleanPreferencesKey("plugin_enabled_$pluginId")] = enabled
+            }
+            export.quickEntries.forEach { (pluginId, visible) ->
+                prefs[booleanPreferencesKey("plugin_quick_entry_$pluginId")] = visible
             }
             export.configs.forEach { (pluginId, config) ->
                 prefs[stringPreferencesKey("plugin_config_$pluginId")] = json.encodeToString(config)

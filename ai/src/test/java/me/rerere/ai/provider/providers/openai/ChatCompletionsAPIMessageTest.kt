@@ -8,10 +8,14 @@ package me.rerere.ai.provider.providers.openai
 
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.boolean
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 import me.rerere.ai.core.MessageRole
+import me.rerere.ai.provider.Model
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.ai.util.KeyRoulette
@@ -35,14 +39,26 @@ class ChatCompletionsAPIMessageTest {
         api = ChatCompletionsAPI(OkHttpClient(), KeyRoulette.default())
     }
 
-    // Helper to invoke private buildMessages method via reflection
     private fun invokeBuildMessages(messages: List<UIMessage>): JsonArray {
-        val method = ChatCompletionsAPI::class.java.getDeclaredMethod(
-            "buildMessages",
-            List::class.java
+        return api.buildMessages(
+            messages = messages,
+            model = Model(modelId = "test-model", displayName = "test-model"),
         )
-        method.isAccessible = true
-        return method.invoke(api, messages) as JsonArray
+    }
+
+    @Test
+    fun `dynamic environment metadata should be serialized on user message`() {
+        val message = UIMessage.user("snapshot").copy(
+            metadata = buildJsonObject {
+                put("dynamic_environment", true)
+                put("generated_at", "07-29 17:10")
+            }
+        )
+
+        val serialized = invokeBuildMessages(listOf(message)).single().jsonObject
+
+        assertTrue(serialized["metadata"]!!.jsonObject["dynamic_environment"]!!.jsonPrimitive.boolean)
+        assertEquals("07-29 17:10", serialized["metadata"]!!.jsonObject["generated_at"]!!.jsonPrimitive.content)
     }
 
     @Test

@@ -11,12 +11,14 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.LargeFlexibleTopAppBar
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -158,6 +160,46 @@ private fun AssistantLocalToolContent(
                     Switch(
                         checked = assistant.localTools.contains(LocalToolOption.RequestVoiceCall),
                         onCheckedChange = { toggleLocalTool(LocalToolOption.RequestVoiceCall, it) }
+                    )
+                }
+            )
+            item(
+                headlineContent = { Text("互动用户") },
+                supportingContent = {
+                    Text("允许 AI 传入本次动作和内容；未传时使用“AI 对我的互动”中的默认值")
+                },
+                trailingContent = {
+                    Switch(
+                        checked = assistant.localTools.contains(LocalToolOption.PatUser),
+                        onCheckedChange = { toggleLocalTool(LocalToolOption.PatUser, it) }
+                    )
+                }
+            )
+            item(
+                headlineContent = { Text("生成图片") },
+                supportingContent = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("允许 AI 调用已配置的生图模型，并以独立图片卡片发送结果")
+                        if (assistant.localTools.contains(LocalToolOption.ImageGeneration)) {
+                            OutlinedTextField(
+                                value = assistant.imageGenerationSystemPrompt,
+                                onValueChange = {
+                                    onUpdate(assistant.copy(imageGenerationSystemPrompt = it))
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                                label = { Text("生图系统提示词") },
+                                supportingText = {
+                                    Text("会添加在 AI 编写的提示词之前，可用于规定画风、构图、色彩和禁止内容")
+                                },
+                                minLines = 3,
+                            )
+                        }
+                    }
+                },
+                trailingContent = {
+                    Switch(
+                        checked = assistant.localTools.contains(LocalToolOption.ImageGeneration),
+                        onCheckedChange = { toggleLocalTool(LocalToolOption.ImageGeneration, it) }
                     )
                 }
             )

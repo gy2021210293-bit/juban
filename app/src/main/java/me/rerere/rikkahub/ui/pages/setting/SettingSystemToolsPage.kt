@@ -16,12 +16,14 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LargeFlexibleTopAppBar
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
@@ -31,6 +33,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -38,6 +41,8 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.text.selection.SelectionContainer
+import kotlinx.coroutines.launch
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.Camera01
@@ -68,6 +73,8 @@ import me.rerere.rikkahub.data.ai.tools.SystemTools
 import me.rerere.rikkahub.service.KeepAliveService
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.datastore.SystemToolsSetting
+import me.rerere.rikkahub.data.service.DynamicContextMonitor
+import me.rerere.rikkahub.data.service.DynamicContextProvider
 import me.rerere.rikkahub.data.gadgetbridge.GadgetbridgeReader
 import me.rerere.rikkahub.ui.components.nav.BackButton
 import me.rerere.rikkahub.ui.components.ui.CardGroup
@@ -82,16 +89,21 @@ import me.rerere.rikkahub.ui.components.ui.permission.PermissionInfo
 import me.rerere.rikkahub.ui.components.ui.permission.PermissionPostNotifications
 import me.rerere.rikkahub.ui.components.ui.permission.PermissionReadSms
 import me.rerere.rikkahub.ui.components.ui.permission.PermissionReadPhoneState
+import me.rerere.rikkahub.ui.components.ui.permission.PermissionReadCalendar
 import me.rerere.rikkahub.ui.components.ui.permission.rememberPermissionState
 import me.rerere.rikkahub.ui.theme.CustomColors
 import me.rerere.rikkahub.utils.plus
 import me.rerere.rikkahub.Screen
 import org.koin.androidx.compose.koinViewModel
+import org.koin.compose.koinInject
 
 @Composable
 fun SettingSystemToolsPage(vm: SettingVM = koinViewModel()) {
     val context = LocalContext.current
     val navController = LocalNavController.current
+    val dynamicContextProvider: DynamicContextProvider = koinInject()
+    val dynamicContextMonitor: DynamicContextMonitor = koinInject()
+    val coroutineScope = rememberCoroutineScope()
     val settings by vm.settings.collectAsStateWithLifecycle()
     var systemToolsSetting by remember(settings) {
         mutableStateOf(settings.systemToolsSetting)
@@ -113,12 +125,17 @@ fun SettingSystemToolsPage(vm: SettingVM = koinViewModel()) {
         add(PermissionAccessBackgroundLocation)
     }
     val locationPermissionState = rememberPermissionState(permissions = locationPermissions)
+    val dynamicLocationPermissionState = rememberPermissionState(
+        permissions = setOf(PermissionAccessFineLocation, PermissionAccessCoarseLocation)
+    )
 
     val notificationPermissionState = rememberPermissionState(
         permissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             setOf(PermissionPostNotifications)
         } else emptySet<PermissionInfo>()
     )
+    val calendarPermissionState = rememberPermissionState(permissions = setOf(PermissionReadCalendar))
+    var dynamicContextPreview by remember { mutableStateOf<String?>(null) }
 
     // 保活开关状态
     var keepAliveEnabled by remember(settings) {
@@ -186,6 +203,193 @@ fun SettingSystemToolsPage(vm: SettingVM = koinViewModel()) {
                 }
             }
 
+            item {
+                CardGroup(
+                    title = { Text("动态环境感知") },
+                    modifier = Modifier.padding(horizontal = 8.dp)
+                ) {
+                    item(
+                        headlineContent = { Text("注入动态环境上下文") },
+                        supportingContent = {
+                            Text("生成前读取当前设备环境和每类最后一次变化；默认关闭，数据仅保存在本机进程内")
+                        },
+                        trailingContent = {
+                            Switch(
+                                checked = systemToolsSetting.dynamicContextEnabled,
+                                onCheckedChange = { enabled ->
+                                    val updated = systemToolsSetting.copy(dynamicContextEnabled = enabled)
+                                    updateSystemToolsSetting(updated)
+                                    dynamicContextMonitor.setEnabled(enabled)
+                                }
+                            )
+                        }
+                    )
+                    if (systemToolsSetting.dynamicContextEnabled) {
+                        item(
+                            headlineContent = { Text("前台应用") },
+                            supportingContent = { Text("当前应用、停留时间和最后一次应用切换") },
+                            trailingContent = {
+                                Switch(
+                                    checked = systemToolsSetting.dynamicContextApps,
+                                    onCheckedChange = {
+                                        updateSystemToolsSetting(systemToolsSetting.copy(dynamicContextApps = it))
+                                    }
+                                )
+                            }
+                        )
+                        item(
+                            headlineContent = { Text("设备状态") },
+                            supportingContent = { Text("屏幕、电量和最后一次充电变化") },
+                            trailingContent = {
+                                Switch(
+                                    checked = systemToolsSetting.dynamicContextDevice,
+                                    onCheckedChange = {
+                                        updateSystemToolsSetting(systemToolsSetting.copy(dynamicContextDevice = it))
+                                    }
+                                )
+                            }
+                        )
+                        item(
+                            headlineContent = { Text("耳机与媒体") },
+                            supportingContent = { Text("音频输出设备和当前媒体播放状态") },
+                            trailingContent = {
+                                Switch(
+                                    checked = systemToolsSetting.dynamicContextAudio,
+                                    onCheckedChange = {
+                                        updateSystemToolsSetting(systemToolsSetting.copy(dynamicContextAudio = it))
+                                    }
+                                )
+                            }
+                        )
+                        item(
+                            headlineContent = { Text("活动通知") },
+                            supportingContent = { Text("最多5条仍在通知栏的标题，不注入正文") },
+                            trailingContent = {
+                                Switch(
+                                    checked = systemToolsSetting.dynamicContextNotifications,
+                                    onCheckedChange = {
+                                        updateSystemToolsSetting(
+                                            systemToolsSetting.copy(dynamicContextNotifications = it)
+                                        )
+                                    }
+                                )
+                            }
+                        )
+                        item(
+                            headlineContent = { Text("网络状态") },
+                            supportingContent = { Text("当前网络类型和最后一次网络切换") },
+                            trailingContent = {
+                                Switch(
+                                    checked = systemToolsSetting.dynamicContextNetwork,
+                                    onCheckedChange = {
+                                        updateSystemToolsSetting(systemToolsSetting.copy(dynamicContextNetwork = it))
+                                    }
+                                )
+                            }
+                        )
+                        item(
+                            headlineContent = { Text("街道级位置") },
+                            supportingContent = { Text("不发送坐标、门牌号、社区、建筑或具体地点") },
+                            trailingContent = {
+                                Switch(
+                                    checked = systemToolsSetting.dynamicContextLocation,
+                                    onCheckedChange = { enabled ->
+                                        if (enabled && !dynamicLocationPermissionState.allPermissionsGranted) {
+                                            dynamicLocationPermissionState.requestPermissions()
+                                        }
+                                        updateSystemToolsSetting(
+                                            systemToolsSetting.copy(dynamicContextLocation = enabled)
+                                        )
+                                    }
+                                )
+                            }
+                        )
+                        item(
+                            headlineContent = { Text("未来24小时日历") },
+                            supportingContent = { Text("最多5项，只包含标题和时间") },
+                            trailingContent = {
+                                Switch(
+                                    checked = systemToolsSetting.dynamicContextCalendar,
+                                    onCheckedChange = { enabled ->
+                                        if (enabled && !calendarPermissionState.allPermissionsGranted) {
+                                            calendarPermissionState.requestPermissions()
+                                        }
+                                        updateSystemToolsSetting(
+                                            systemToolsSetting.copy(dynamicContextCalendar = enabled)
+                                        )
+                                    }
+                                )
+                            }
+                        )
+                        item(
+                            headlineContent = { Text("预览注入内容") },
+                            supportingContent = { Text("查看当前实际会发送给模型的动态上下文") },
+                            onClick = {
+                                coroutineScope.launch {
+                                    dynamicContextPreview = dynamicContextProvider.build(
+                                        settings.copy(systemToolsSetting = systemToolsSetting)
+                                    ).ifBlank { "当前没有可注入的动态环境信息。" }
+                                }
+                            }
+                        )
+                        if (systemToolsSetting.dynamicContextApps && !SystemTools.hasAppUsagePermission(context)) {
+                            item(
+                                headlineContent = { Text("⚠ 前台应用权限缺失") },
+                                supportingContent = { Text("未启用无障碍事件时，需要使用情况访问权限作为当前应用回退来源") },
+                                trailingContent = {
+                                    FilledTonalButton(onClick = {
+                                        runCatching {
+                                            context.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
+                                        }
+                                    }) { Text("去设置") }
+                                }
+                            )
+                        }
+                        if (systemToolsSetting.dynamicContextNotifications &&
+                            !me.rerere.rikkahub.data.ai.tools.local.NotificationListenerHandle.isBound()
+                        ) {
+                            item(
+                                headlineContent = { Text("⚠ 通知访问权限缺失") },
+                                supportingContent = { Text("未授权时不会注入活动通知") },
+                                trailingContent = {
+                                    FilledTonalButton(onClick = {
+                                        runCatching {
+                                            context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+                                        }
+                                    }) { Text("去设置") }
+                                }
+                            )
+                        }
+                        if (systemToolsSetting.dynamicContextLocation &&
+                            !dynamicLocationPermissionState.allPermissionsGranted
+                        ) {
+                            item(
+                                headlineContent = { Text("⚠ 定位权限缺失") },
+                                supportingContent = { Text("未授权时不会注入位置") },
+                                trailingContent = {
+                                    FilledTonalButton(onClick = {
+                                        dynamicLocationPermissionState.requestPermissions()
+                                    }) { Text("授权") }
+                                }
+                            )
+                        }
+                        if (systemToolsSetting.dynamicContextCalendar &&
+                            !calendarPermissionState.allPermissionsGranted
+                        ) {
+                            item(
+                                headlineContent = { Text("⚠ 日历权限缺失") },
+                                supportingContent = { Text("未授权时不会注入未来日历事件") },
+                                trailingContent = {
+                                    FilledTonalButton(onClick = {
+                                        calendarPermissionState.requestPermissions()
+                                    }) { Text("授权") }
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+
             // 后台保活
             item {
             CardGroup(
@@ -230,10 +434,9 @@ fun SettingSystemToolsPage(vm: SettingVM = koinViewModel()) {
                             }
                         }
                     )
-                }
-            }
-            }
-
+        }
+    }
+    }
 
             // 位置服务
             item {
@@ -1215,9 +1418,28 @@ fun SettingSystemToolsPage(vm: SettingVM = koinViewModel()) {
         }
 
         PermissionManager(permissionState = locationPermissionState)
+        PermissionManager(permissionState = dynamicLocationPermissionState)
         PermissionManager(permissionState = notificationPermissionState)
         PermissionManager(permissionState = cameraPermissionState)
         PermissionManager(permissionState = smsPermissionState)
         PermissionManager(permissionState = phoneStatePermissionState)
+        PermissionManager(permissionState = calendarPermissionState)
+    }
+
+    dynamicContextPreview?.let { preview ->
+        AlertDialog(
+            onDismissRequest = { dynamicContextPreview = null },
+            title = { Text("动态环境上下文预览") },
+            text = {
+                SelectionContainer {
+                    Text(preview)
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { dynamicContextPreview = null }) {
+                    Text("关闭")
+                }
+            }
+        )
     }
 }

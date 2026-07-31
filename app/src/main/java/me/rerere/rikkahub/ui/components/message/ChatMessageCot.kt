@@ -8,6 +8,7 @@ package me.rerere.rikkahub.ui.components.message
 
 import androidx.compose.ui.util.fastForEachIndexed
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.rikkahub.data.ai.tools.patDisplayTextOrNull
 
 /**
  * 思考步骤类型，用于分组 Reasoning 和 Tool
@@ -52,7 +53,12 @@ fun List<UIMessagePart>.groupMessageParts(): List<MessagePartBlock> {
             }
 
             is UIMessagePart.Tool -> {
-                currentThinkingSteps.add(ThinkingStep.ToolStep(part))
+                if (part.patDisplayTextOrNull() != null) {
+                    flushThinkingSteps()
+                    result.add(MessagePartBlock.ContentBlock(part, index))
+                } else {
+                    currentThinkingSteps.add(ThinkingStep.ToolStep(part))
+                }
             }
 
             else -> {

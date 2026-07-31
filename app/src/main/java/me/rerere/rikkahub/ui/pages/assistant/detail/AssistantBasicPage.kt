@@ -100,7 +100,6 @@ fun AssistantBasicPage(id: String) {
         )
     }
 }
- 
 @Composable
 internal fun AssistantBasicContent(
     modifier: Modifier = Modifier,
@@ -166,7 +165,50 @@ internal fun AssistantBasicContent(
             }
  
             HorizontalDivider()
- 
+
+            FormItem(
+                label = {
+                    Text("双击互动")
+                },
+                description = {
+                    Text("双击这个助手的头像时使用，例如：你捏一捏「助手名」的脸")
+                },
+                modifier = Modifier.padding(8.dp),
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = assistant.patAction,
+                        onValueChange = {
+                            onUpdate(
+                                assistant.copy(
+                                    patAction = it
+                                )
+                            )
+                        },
+                        label = { Text("动作") },
+                        placeholder = { Text("例如：捏一捏") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    OutlinedTextField(
+                        value = assistant.patSuffix,
+                        onValueChange = {
+                            onUpdate(
+                                assistant.copy(
+                                    patSuffix = it
+                                )
+                            )
+                        },
+                        label = { Text("内容") },
+                        placeholder = { Text("例如：的脸") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            }
+
+            HorizontalDivider()
+
             FormItem(
                 label = {
                     Text(stringResource(R.string.assistant_page_tags))
@@ -576,4 +618,3 @@ internal fun AssistantBasicContent(
         }
     }
 }
- 

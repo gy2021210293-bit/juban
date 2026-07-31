@@ -22,6 +22,10 @@ import kotlinx.serialization.json.put
 import me.rerere.ai.core.InputSchema
 import me.rerere.ai.core.Tool
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.rikkahub.data.ai.GENERATED_IMAGE_TOOL_NAME
+import me.rerere.rikkahub.data.ai.GeneratedImageRequest
+import me.rerere.rikkahub.data.ai.newGeneratedImageJobId
+import me.rerere.rikkahub.data.ai.toToolResult
 import me.rerere.rikkahub.data.event.AppEvent
 import me.rerere.rikkahub.data.event.AppEventBus
 import me.rerere.rikkahub.service.VoiceCallService
@@ -57,6 +61,14 @@ sealed class LocalToolOption {
     @Serializable
     @SerialName("request_voice_call")
     data object RequestVoiceCall : LocalToolOption()
+
+    @Serializable
+    @SerialName("pat_user")
+    data object PatUser : LocalToolOption()
+
+    @Serializable
+    @SerialName("image_generation")
+    data object ImageGeneration : LocalToolOption()
  
     @Serializable
     @SerialName("ask_user")
@@ -590,6 +602,16 @@ class LocalTools(
         if (options.contains(LocalToolOption.RequestVoiceCall) && conversationId != null) {
             tools.add(createRequestVoiceCallTool(conversationId))
         }
+        if (options.contains(LocalToolOption.PatUser)) {
+            tools.add(createPatUserTool(invocationContext))
+        }
+        if (
+            options.contains(LocalToolOption.ImageGeneration) &&
+            invocationContext.callerConversationId != null &&
+            invocationContext.imageGenerationModelId != null
+        ) {
+            tools.add(createImageGenerationTool(invocationContext))
+        }
         if (options.contains(LocalToolOption.AskUser)) {
             tools.add(askUserTool)
         }
@@ -629,3 +651,50 @@ class LocalTools(
         return tools
     }
 }
+
+private fun createImageGenerationTool(context: ToolInvocationContext) = Tool(
+    name = GENERATED_IMAGE_TOOL_NAME,
+    description = "Generate one image asynchronously and send it as a separate chat card. Provide a concise description for future conversation context and a detailed image prompt.",
+    needsApproval = true,
+    parameters = {
+        InputSchema.Obj(
+            properties = buildJsonObject {
+                put("description", buildJsonObject {
+                    put("type", "string")
+                    put("description", "A concise, user-readable description of the image")
+                })
+                put("prompt", buildJsonObject {
+                    put("type", "string")
+                    put("description", "The detailed prompt sent to the image generation model")
+                })
+                put("aspect_ratio", buildJsonObject {
+                    put("type", "string")
+                    put("enum", kotlinx.serialization.json.buildJsonArray {
+                        add("square"); add("landscape"); add("portrait")
+                    })
+                    put("default", "square")
+                })
+            },
+            required = listOf("description", "prompt")
+        )
+    },
+    execute = { input ->
+        val obj = input.jsonObject
+        val description = obj["description"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+        val prompt = obj["prompt"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+        val aspectRatio = obj["aspect_ratio"]?.jsonPrimitive?.contentOrNull
+            ?.lowercase()?.takeIf { it in setOf("square", "landscape", "portrait") } ?: "square"
+        require(description.isNotBlank()) { "description is required" }
+        require(prompt.isNotBlank()) { "prompt is required" }
+        listOf(
+            GeneratedImageRequest(
+                jobId = newGeneratedImageJobId(),
+                description = description,
+                prompt = prompt,
+                systemPrompt = context.imageGenerationSystemPrompt,
+                aspectRatio = aspectRatio,
+                modelId = requireNotNull(context.imageGenerationModelId),
+            ).toToolResult()
+        )
+    },
+)

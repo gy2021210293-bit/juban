@@ -198,6 +198,29 @@ fun WorkflowDetailScreen(
                     }
                 }
             }
+            currentLoaded.definition.aiWake?.let { wake ->
+                item {
+                    SectionHeader("AI 唤醒")
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(wake.prompt, style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            "传入动作输出：${if (wake.includeActionOutputs) "是" else "否"}",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        Text(
+                            "工具与插件权限：${
+                                if (wake.allowAllToolsAndPlugins) "全部（后台预授权）" else "受限"
+                            }",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (wake.allowAllToolsAndPlugins) {
+                                MaterialTheme.colorScheme.error
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                        )
+                    }
+                }
+            }
             // Stats
             item {
                 SectionHeader("统计")

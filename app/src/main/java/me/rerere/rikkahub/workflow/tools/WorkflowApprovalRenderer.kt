@@ -67,6 +67,14 @@ object WorkflowApprovalRenderer {
         for ((idx, action) in def.actions.withIndex()) {
             sb.appendLine("  ${idx + 1}. ${actionSummary(action)}")
         }
+        def.aiWake?.let { wake ->
+            sb.appendLine("Wake AI: ${wake.prompt.take(160)}")
+            sb.appendLine("Pass action outputs: ${if (wake.includeActionOutputs) "yes" else "no"}")
+            sb.appendLine(
+                "AI tool/plugin access: " +
+                    if (wake.allowAllToolsAndPlugins) "all (background pre-authorized)" else "restricted",
+            )
+        }
         sb.appendLine()
         sb.appendLine("Cooldown: ${
             if (def.cooldownSeconds == 0) "none"
@@ -98,6 +106,20 @@ object WorkflowApprovalRenderer {
         sb.appendLine("<b>Do:</b>")
         for ((idx, action) in def.actions.withIndex()) {
             sb.appendLine("  ${idx + 1}. <code>${escapeHtml(action.tool)}</code>(${escapeHtml(actionArgsHint(action))})")
+        }
+        def.aiWake?.let { wake ->
+            sb.appendLine("<b>Wake AI:</b> ${escapeHtml(wake.prompt.take(160))}")
+            sb.appendLine(
+                "<b>Pass action outputs:</b> ${if (wake.includeActionOutputs) "yes" else "no"}",
+            )
+            sb.appendLine(
+                "<b>AI tool/plugin access:</b> " +
+                    if (wake.allowAllToolsAndPlugins) {
+                        "all (background pre-authorized)"
+                    } else {
+                        "restricted"
+                    },
+            )
         }
         sb.appendLine()
         sb.appendLine("<b>Cooldown:</b> ${

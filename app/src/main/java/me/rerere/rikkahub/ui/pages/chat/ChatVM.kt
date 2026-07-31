@@ -29,6 +29,7 @@ import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.ai.ui.isEmptyInputMessage
 import me.rerere.rikkahub.R
+import me.rerere.rikkahub.data.ai.tools.createUserPatAssistantPart
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.datastore.getCurrentChatModel
@@ -182,6 +183,19 @@ class ChatVM(
         chatService.sendMessage(_conversationId, content, answer)
     }
 
+    fun handlePatAssistant(assistant: Assistant) {
+        chatService.sendMessage(
+            conversationId = _conversationId,
+            content = listOf(
+                createUserPatAssistantPart(
+                    assistantName = assistant.name,
+                    assistantPatAction = assistant.patAction,
+                    assistantPatSuffix = assistant.patSuffix,
+                )
+            ),
+        )
+    }
+
     fun handleMessageEdit(parts: List<UIMessagePart>, messageId: Uuid) {
         if (parts.isEmptyInputMessage()) return
 
@@ -211,6 +225,12 @@ class ChatVM(
     fun deleteMessage(message: UIMessage) {
         viewModelScope.launch {
             chatService.deleteMessage(_conversationId, message)
+        }
+    }
+
+    fun retryGeneratedImage(message: UIMessage) {
+        viewModelScope.launch {
+            chatService.retryGeneratedImage(_conversationId, message.id)
         }
     }
 

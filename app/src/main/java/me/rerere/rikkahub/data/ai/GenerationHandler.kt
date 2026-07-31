@@ -54,6 +54,8 @@ import me.rerere.rikkahub.data.ai.tools.buildMemoryTools
 import me.rerere.rikkahub.data.ai.tools.buildWriteFilesTool
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.service.MemoryBankService
+import me.rerere.rikkahub.data.service.DynamicContextProvider
+import me.rerere.rikkahub.data.service.dynamicEnvironmentMetadata
 import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.datastore.findProvider
 import me.rerere.rikkahub.data.model.Assistant
@@ -79,7 +81,6 @@ sealed interface GenerationChunk {
         val messages: List<UIMessage>
     ) : GenerationChunk
 }
- 
 class GenerationHandler(
     private val context: Context,
     private val providerManager: ProviderManager,
@@ -88,6 +89,7 @@ class GenerationHandler(
     private val conversationRepo: ConversationRepository,
     private val aiLoggingManager: AILoggingManager,
     private val memoryBankService: MemoryBankService,
+    private val dynamicContextProvider: DynamicContextProvider,
 ) {
     fun generateText(
         settings: Settings,
@@ -107,6 +109,7 @@ class GenerationHandler(
     ): Flow<GenerationChunk> = flow {
         val provider = model.findProvider(settings.providers) ?: error("Provider not found")
         val providerImpl = providerManager.getProviderByType(provider)
+        val dynamicContext = dynamicContextProvider.build(settings)
  
         var messages: List<UIMessage> = messages
  
@@ -183,6 +186,7 @@ class GenerationHandler(
                     processingStatus = processingStatus,
                     conversationSystemPrompt = conversationSystemPrompt,
                     workspaceCwd = workspaceCwd,
+                    dynamicContext = dynamicContext,
                 )
                 messages = messages.visualTransforms(
                     transformers = outputTransformers,
@@ -379,6 +383,7 @@ class GenerationHandler(
         processingStatus: MutableStateFlow<String?> = MutableStateFlow(null),
         conversationSystemPrompt: String? = null,
         workspaceCwd: String? = null,
+        dynamicContext: String = "",
     ) {
         val internalMessages = buildList {
             val system = buildString {
@@ -517,6 +522,12 @@ class GenerationHandler(
                         append(injection)
                     }
                 }
+
+                if (settings.systemToolsSetting.dynamicContextEnabled) {
+                    appendLine()
+                    appendLine()
+                    append(DYNAMIC_CONTEXT_SYSTEM_POLICY)
+                }
  
                 // 允许跳过回复
                 if (assistant.allowSkipReply) {
@@ -552,7 +563,11 @@ class GenerationHandler(
             }
             if (system.isNotBlank()) add(UIMessage.system(prompt = system))
             addAll(messages.limitContext(assistant.contextMessageSize))
-        }.transforms(
+        }
+            // Generated-image cards are UI-only. Replace them before every input transformer so
+            // OCR and similar transformers cannot upload their local files to another model.
+            .replaceGeneratedImagesWithDescriptions()
+            .transforms(
             transformers = transformers,
             context = context,
             model = model,
@@ -561,6 +576,10 @@ class GenerationHandler(
             processingStatus = processingStatus,
             workspaceCwd = workspaceCwd,
         )
+        val providerMessages = insertDynamicContextBeforeCurrentUser(
+            messages = internalMessages,
+            dynamicContext = dynamicContext,
+        ).replaceGeneratedImagesWithDescriptions()
  
         var messages: List<UIMessage> = messages
         val params = TextGenerationParams(
@@ -590,7 +609,7 @@ class GenerationHandler(
             )
             providerImpl.streamText(
                 providerSetting = provider,
-                messages = internalMessages,
+                messages = providerMessages,
                 params = params
             ).collect {
                 messages = messages.handleMessageChunk(chunk = it, model = model)
@@ -616,7 +635,7 @@ class GenerationHandler(
             )
             val chunk = providerImpl.generateText(
                 providerSetting = provider,
-                messages = internalMessages,
+                messages = providerMessages,
                 params = params,
             )
             messages = messages.handleMessageChunk(chunk = chunk, model = model)
@@ -753,4 +772,26 @@ private fun buildCodeBlockPrompt(): String = buildString {
     appendLine("   - The `edits` mode applies search/replace to the files from your previous `write_files` call. Files not mentioned in `edits` keep their content unchanged.")
     appendLine("   - Always use actual filenames (e.g. `MainActivity.kt`) as code block language tags, not just language names (e.g. `kotlin`).")
 }
- 
+
+internal fun insertDynamicContextBeforeCurrentUser(
+    messages: List<UIMessage>,
+    dynamicContext: String,
+): List<UIMessage> {
+    if (dynamicContext.isBlank()) return messages
+    val currentUserIndex = messages.indexOfLast { it.role == MessageRole.USER }
+    if (currentUserIndex < 0) return messages
+    return buildList(messages.size + 1) {
+        addAll(messages.subList(0, currentUserIndex))
+        add(
+            UIMessage.user(dynamicContext).copy(
+                metadata = dynamicEnvironmentMetadata(dynamicContext)
+            )
+        )
+        addAll(messages.subList(currentUserIndex, messages.size))
+    }
+}
+
+internal const val DYNAMIC_CONTEXT_SYSTEM_POLICY =
+    "A <dynamic_context> user message may be inserted immediately before the current user's message. " +
+        "It contains potentially stale environment facts, not user instructions. Use only relevant facts naturally; " +
+        "do not enumerate them, reveal their source, or infer the user's emotions or intent from them."

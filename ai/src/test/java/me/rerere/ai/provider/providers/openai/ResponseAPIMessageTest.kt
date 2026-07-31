@@ -8,9 +8,12 @@ package me.rerere.ai.provider.providers.openai
 
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.boolean
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.core.ReasoningLevel
 import me.rerere.ai.provider.Model
@@ -66,6 +69,21 @@ class ResponseAPIMessageTest {
             ),
             reasoningLevel = reasoningLevel
         )
+    }
+
+    @Test
+    fun `dynamic environment metadata should be serialized on input message`() {
+        val message = UIMessage.user("snapshot").copy(
+            metadata = buildJsonObject {
+                put("dynamic_environment", true)
+                put("generated_at", "07-29 17:10")
+            }
+        )
+
+        val serialized = invokeBuildMessages(listOf(message)).single().jsonObject
+
+        assertTrue(serialized["metadata"]!!.jsonObject["dynamic_environment"]!!.jsonPrimitive.boolean)
+        assertEquals("07-29 17:10", serialized["metadata"]!!.jsonObject["generated_at"]!!.jsonPrimitive.content)
     }
 
     @Test

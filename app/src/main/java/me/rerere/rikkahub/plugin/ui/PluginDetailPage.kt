@@ -70,6 +70,7 @@ import me.rerere.rikkahub.plugin.model.PluginConfigField
 import me.rerere.rikkahub.plugin.model.PluginFolder
 import me.rerere.rikkahub.plugin.model.PluginInfo
 import me.rerere.rikkahub.plugin.model.PluginToolDefinition
+import me.rerere.rikkahub.plugin.model.hasSupportedQuickEntryUi
 import me.rerere.rikkahub.ui.components.ai.ModelSelector
 import org.koin.androidx.compose.koinViewModel
 import org.koin.compose.koinInject
@@ -88,7 +89,8 @@ fun PluginDetailPage(
     onNavigateToDeclarativeUI: (pluginId: String) -> Unit = {},
     viewModel: PluginViewModel = koinViewModel()
 ) {
-    val plugin = viewModel.getPlugin(pluginId)
+    val plugins by viewModel.plugins.collectAsState()
+    val plugin = plugins.find { it.manifest.id == pluginId }
 
     if (plugin == null) {
         Column(
@@ -152,6 +154,37 @@ fun PluginDetailPage(
                 }
             )
             Spacer(modifier = Modifier.height(24.dp))
+
+            if (plugin.hasSupportedQuickEntryUi()) {
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        horizontalArrangement = Arrangement.spacedBy(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "显示在聊天快捷入口",
+                                style = MaterialTheme.typography.titleMedium,
+                            )
+                            Text(
+                                text = "独立于插件启用状态；停用后仍可从主聊天页打开 UI",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Switch(
+                            checked = plugin.showInQuickEntry,
+                            onCheckedChange = {
+                                viewModel.setPluginQuickEntryVisibility(pluginId, it)
+                            },
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.height(24.dp))
+            }
 
             // 自定义页面入口（声明式 UI 优先于 WebView）
             val uiDeclaration = plugin.manifest.ui

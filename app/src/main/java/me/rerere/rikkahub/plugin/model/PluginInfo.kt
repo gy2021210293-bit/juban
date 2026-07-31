@@ -27,6 +27,11 @@ data class PluginInfo(
      * 是否启用
      */
     val isEnabled: Boolean,
+
+    /**
+     * 是否显示在主聊天页的插件快捷入口
+     */
+    val showInQuickEntry: Boolean = isEnabled,
     
     /**
      * 用户配置值

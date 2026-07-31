@@ -50,6 +50,7 @@ import me.rerere.ai.ui.ImageGenerationItem
 import me.rerere.ai.ui.ImageGenerationResult
 import me.rerere.ai.ui.MessageChunk
 import me.rerere.ai.ui.UIMessage
+import me.rerere.ai.ui.sanitizeGeneratedImagesForProvider
 import me.rerere.ai.ui.UIMessageAnnotation
 import me.rerere.ai.ui.UIMessageChoice
 import me.rerere.ai.ui.UIMessagePart
@@ -165,7 +166,7 @@ class GoogleProvider(private val client: OkHttpClient, context: Context? = null)
         messages: List<UIMessage>,
         params: TextGenerationParams,
     ): MessageChunk = withContext(Dispatchers.IO) {
-        val requestBody = buildCompletionRequestBody(messages, params)
+        val requestBody = buildCompletionRequestBody(messages.sanitizeGeneratedImagesForProvider(), params)
 
         val url = buildUrl(
             providerSetting = providerSetting,
@@ -221,7 +222,7 @@ class GoogleProvider(private val client: OkHttpClient, context: Context? = null)
         messages: List<UIMessage>,
         params: TextGenerationParams,
     ): Flow<MessageChunk> = callbackFlow {
-        val requestBody = buildCompletionRequestBody(messages, params)
+        val requestBody = buildCompletionRequestBody(messages.sanitizeGeneratedImagesForProvider(), params)
 
         val url = buildUrl(
             providerSetting = providerSetting,

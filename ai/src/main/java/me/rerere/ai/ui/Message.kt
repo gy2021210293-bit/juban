@@ -13,6 +13,8 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.jsonPrimitive
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.core.TokenUsage
 import me.rerere.ai.provider.Model
@@ -33,7 +35,8 @@ data class UIMessage(
     val finishedAt: LocalDateTime? = null,
     val modelId: Uuid? = null,
     val usage: TokenUsage? = null,
-    val translation: String? = null
+    val translation: String? = null,
+    val metadata: JsonObject? = null,
 ) {
     private fun appendChunk(chunk: MessageChunk): UIMessage {
         val choice = chunk.choices.getOrNull(0)
@@ -247,7 +250,8 @@ fun List<UIMessagePart>.isEmptyInputMessage(): Boolean {
     return this.all { message ->
         when (message) {
             is UIMessagePart.Text -> message.text.isBlank()
-            is UIMessagePart.Image -> message.url.isBlank()
+            is UIMessagePart.Image -> message.url.isBlank() &&
+                message.metadata?.get("generated_image")?.jsonPrimitive?.booleanOrNull != true
             is UIMessagePart.Document -> message.url.isBlank()
             is UIMessagePart.Video -> message.url.isBlank()
             is UIMessagePart.Audio -> message.url.isBlank()
@@ -265,7 +269,8 @@ fun List<UIMessagePart>.isEmptyUIMessage(): Boolean {
     return this.all { message ->
         when (message) {
             is UIMessagePart.Text -> message.text.isBlank()
-            is UIMessagePart.Image -> message.url.isBlank()
+            is UIMessagePart.Image -> message.url.isBlank() &&
+                message.metadata?.get("generated_image")?.jsonPrimitive?.booleanOrNull != true
             is UIMessagePart.Document -> message.url.isBlank()
             is UIMessagePart.Reasoning -> message.reasoning.isBlank()
             is UIMessagePart.Video -> message.url.isBlank()
@@ -319,6 +324,24 @@ fun List<UIMessage>.limitContext(size: Int): List<UIMessage> {
     }
 
     return this.subList(adjustedStartIndex, this.size)
+}
+
+/** Provider-bound privacy guard for asynchronous chat-generated images. */
+fun List<UIMessage>.sanitizeGeneratedImagesForProvider(): List<UIMessage> = map { message ->
+    message.copy(parts = message.parts.map { part ->
+        if (part !is UIMessagePart.Image ||
+            part.metadata?.get("generated_image")?.jsonPrimitive?.booleanOrNull != true
+        ) return@map part
+        val description = part.metadata?.get("description")?.jsonPrimitive?.content.orEmpty()
+        val status = part.metadata?.get("status")?.jsonPrimitive?.content
+        UIMessagePart.Text(
+            when (status) {
+                "pending" -> "AI 正在生成一张图片：$description"
+                "failed" -> "AI 曾尝试生成一张图片：$description，但生成失败"
+                else -> "AI 曾发送一张图片：$description"
+            }
+        )
+    })
 }
 
 @Serializable

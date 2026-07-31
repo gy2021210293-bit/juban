@@ -24,6 +24,8 @@ package me.rerere.rikkahub.data.ai.tools
  *    paths know it from their respective entity's assistant id.
  *  - [callerConversationId]: the conversation-uuid of the user-facing chat (interactive)
  *    or the headless conversation (cron / workflow / sub-agent / external-automation).
+ *  - [callerAssistantName], [userPatAction], and [userPatSuffix]: default display
+ *    context for lightweight conversation interactions such as pat_user.
  *  - [isHeadless]: true when the dispatch is happening from a system flow rather than the
  *    user typing in a chat. Sub-agents, cron jobs, workflows, and external-automation
  *    runs all set this to true so the recursion guard fires.
@@ -37,8 +39,13 @@ package me.rerere.rikkahub.data.ai.tools
 data class ToolInvocationContext(
     val callerAssistantId: String? = null,
     val callerConversationId: String? = null,
+    val callerAssistantName: String? = null,
+    val userPatAction: String = "拍了拍",
+    val userPatSuffix: String = "",
     val isHeadless: Boolean = false,
     val modelCanSeeImages: Boolean = true,
+    val imageGenerationSystemPrompt: String = "",
+    val imageGenerationModelId: String? = null,
 ) {
     companion object {
         /** No-knowledge fallback. Factories that depend on context MUST handle this. */

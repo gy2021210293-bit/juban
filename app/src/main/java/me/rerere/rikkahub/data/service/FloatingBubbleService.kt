@@ -33,6 +33,7 @@ import androidx.core.content.ContextCompat
 import coil3.SingletonImageLoader
 import coil3.target.ImageViewTarget
 import coil3.request.ImageRequest
+import coil3.request.allowHardware
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -134,7 +135,6 @@ class FloatingBubbleService : Service() {
         }
 
         val conversationId = intent?.getStringExtra(EXTRA_CONVERSATION_ID)
-        val senderName = intent?.getStringExtra(EXTRA_SENDER_NAME) ?: "AI"
         val avatarJson = intent?.getStringExtra(EXTRA_AVATAR)
         val avatar = try {
             avatarJson?.let { Json.decodeFromString(Avatar.serializer(), it) } ?: Avatar.Dummy
@@ -151,7 +151,7 @@ class FloatingBubbleService : Service() {
 
         // 先移除旧的球（同一时间只显示一个）
         removeBubbleInternal()
-        showBubble(conversationId, senderName, avatar)
+        showBubble(conversationId, avatar)
 
         // 最长存活定时
         handler.removeCallbacks(autoDismissRunnable)
@@ -192,7 +192,7 @@ class FloatingBubbleService : Service() {
         }
     }
 
-    private fun showBubble(conversationId: String, senderName: String, avatar: Avatar) {
+    private fun showBubble(conversationId: String, avatar: Avatar) {
         val sizePx = dp(BUBBLE_SIZE_DP)
         val accentColor = resolveAccentColor()
 
@@ -221,7 +221,7 @@ class FloatingBubbleService : Service() {
                     }
                 }
                 container.addView(imageView, FrameLayout.LayoutParams(sizePx, sizePx))
-                loadAvatar(imageView, avatar.url, senderName, accentColor)
+                loadAvatar(imageView, avatar.url)
             }
 
             is Avatar.Emoji -> {
@@ -236,15 +236,10 @@ class FloatingBubbleService : Service() {
             }
 
             is Avatar.Dummy -> {
-                val initial = senderName.firstOrNull()?.uppercaseChar()?.toString() ?: "A"
-                val tv = TextView(this).apply {
-                    text = initial
-                    textSize = 26f
-                    setTextColor(Color.WHITE)
-                    gravity = Gravity.CENTER
+                val placeholder = View(this).apply {
                     background = bgDrawable
                 }
-                container.addView(tv, FrameLayout.LayoutParams(sizePx, sizePx))
+                container.addView(placeholder, FrameLayout.LayoutParams(sizePx, sizePx))
             }
         }
 
@@ -303,34 +298,19 @@ class FloatingBubbleService : Service() {
     private fun loadAvatar(
         imageView: ImageView,
         url: String,
-        senderName: String,
-        accentColor: Int,
     ) {
         scope.launch {
             runCatching {
                 val loader = SingletonImageLoader.get(this@FloatingBubbleService)
                 val request = ImageRequest.Builder(this@FloatingBubbleService)
                     .data(url)
+                    .allowHardware(false)
                     .target(ImageViewTarget(imageView))
                     .build()
                 loader.execute(request)
             }.onFailure {
-                Log.w(TAG, "Failed to load avatar image, fallback to initial", it)
-                // 回退成首字母
+                Log.w(TAG, "Failed to load avatar image", it)
                 imageView.setImageDrawable(null)
-                val initial = senderName.firstOrNull()?.uppercaseChar()?.toString() ?: "A"
-                imageView.setBackgroundColor(accentColor)
-                // 用一个 TextView 叠上去显示首字母
-                val tv = TextView(this@FloatingBubbleService).apply {
-                    text = initial
-                    textSize = 26f
-                    setTextColor(Color.WHITE)
-                    gravity = Gravity.CENTER
-                }
-                (imageView.parent as? FrameLayout)?.addView(
-                    tv,
-                    FrameLayout.LayoutParams(dp(BUBBLE_SIZE_DP), dp(BUBBLE_SIZE_DP))
-                )
             }
         }
     }

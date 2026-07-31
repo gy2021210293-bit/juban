@@ -34,6 +34,10 @@ val appModule = module {
         AppEventBus()
     }
 
+    single { me.rerere.rikkahub.data.service.DynamicContextMonitor(get()) }
+    single { me.rerere.rikkahub.data.service.DynamicContextProvider(get(), get()) }
+    single { me.rerere.rikkahub.data.service.ChatImageGenerationService(get(), get(), get(), get()) }
+
     // Workflows: AgentRun ledger (no-op stub), repository, engine, trigger registry.
     single { me.rerere.rikkahub.data.agentrun.AgentRunRepository() }
     single {
@@ -51,6 +55,7 @@ val appModule = module {
     single { me.rerere.rikkahub.workflow.execution.WorkflowActionRunner() }
     single {
         me.rerere.rikkahub.workflow.execution.WorkflowEngine(
+            context = get(),
             repository = get(),
             settingsStore = get(),
             contextProvider = get(),

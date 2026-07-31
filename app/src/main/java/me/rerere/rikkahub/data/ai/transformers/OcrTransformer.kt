@@ -12,6 +12,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.jsonPrimitive
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.provider.Modality
 import me.rerere.ai.provider.Model
@@ -63,8 +65,10 @@ object OcrTransformer : InputMessageTransformer, KoinComponent {
         val hasImages = messages.any { message ->
             message.parts.any { part ->
                 when (part) {
-                    is UIMessagePart.Image -> part.url.startsWith("file:")
-                    is UIMessagePart.Tool -> part.output.any { it is UIMessagePart.Image && it.url.startsWith("file:") }
+                    is UIMessagePart.Image -> part.isOcrEligibleLocalImage()
+                    is UIMessagePart.Tool -> part.output.any {
+                        it is UIMessagePart.Image && it.isOcrEligibleLocalImage()
+                    }
                     else -> false
                 }
             }
@@ -79,7 +83,7 @@ object OcrTransformer : InputMessageTransformer, KoinComponent {
                         parts = message.parts.map { part ->
                             when {
                                 // 最外层图片: OCR 转文字
-                                part is UIMessagePart.Image && part.url.startsWith("file:") -> {
+                                part is UIMessagePart.Image && part.isOcrEligibleLocalImage() -> {
                                     UIMessagePart.Text(performOcr(part))
                                 }
 
@@ -88,7 +92,7 @@ object OcrTransformer : InputMessageTransformer, KoinComponent {
                                     part.copy(
                                         output = part.output.map { outputPart ->
                                             when {
-                                                outputPart is UIMessagePart.Image && outputPart.url.startsWith("file:") -> {
+                                                outputPart is UIMessagePart.Image && outputPart.isOcrEligibleLocalImage() -> {
                                                     UIMessagePart.Text(performOcr(outputPart))
                                                 }
                                                 else -> outputPart
@@ -156,3 +160,6 @@ object OcrTransformer : InputMessageTransformer, KoinComponent {
         "[ERROR, OCR failed: $it]"
     }
 }
+
+private fun UIMessagePart.Image.isOcrEligibleLocalImage(): Boolean =
+    url.startsWith("file:") && metadata?.get("generated_image")?.jsonPrimitive?.booleanOrNull != true

@@ -65,7 +65,16 @@ class ToolSurfaceBuilder(
         if (settings.enableWebSearch) {
             addAll(createSearchTools(settings))
         }
-        addAll(localTools.getTools(assistant.localTools, invocationContext))
+        addAll(
+            localTools.getTools(
+                assistant.localTools,
+                invocationContext.copy(
+                    callerAssistantName = assistant.name,
+                    userPatAction = settings.displaySetting.userPatAction,
+                    userPatSuffix = settings.displaySetting.userPatSuffix,
+                ),
+            )
+        )
         val systemToolsOptions = settings.systemToolsSetting.getEnabledOptions()
         if (systemToolsOptions.isNotEmpty()) {
             addAll(SystemTools(context, settings).getTools(systemToolsOptions, recentMessages, filesManager))

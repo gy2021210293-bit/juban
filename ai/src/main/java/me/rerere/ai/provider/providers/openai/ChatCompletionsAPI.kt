@@ -587,7 +587,7 @@ class ChatCompletionsAPI(
         return !ModelRegistry.OPENAI_O_MODELS.match(model.modelId) && !ModelRegistry.GPT_5.match(model.modelId)
     }
 
-    private fun buildMessages(messages: List<UIMessage>, model: Model) = buildJsonArray {
+    internal fun buildMessages(messages: List<UIMessage>, model: Model) = buildJsonArray {
         val filteredMessages = messages.filter { it.isValidToUpload() }
         // 纯文本模型 (如 GLM-5.2) 不接受 image_url, 收到会报 "Model only support text input"。
         // OcrTransformer 只覆盖 file: 图片, http/base64 图片会漏网; 这里在序列化层兜底,
@@ -778,6 +778,7 @@ class ChatCompletionsAPI(
     private fun JsonArrayBuilder.addNonAssistantMessage(message: UIMessage, supportsImage: Boolean = true) {
         add(buildJsonObject {
             put("role", JsonPrimitive(message.role.name.lowercase()))
+            message.metadata?.let { put("metadata", it) }
 
             // 模型不支持图片时, 先过滤掉 Image part, 避免发送 image_url 触发 "Model only support text input"
             val parts = if (supportsImage) message.parts else message.parts.filter { it !is UIMessagePart.Image }

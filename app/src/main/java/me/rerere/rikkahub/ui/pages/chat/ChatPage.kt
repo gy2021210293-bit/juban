@@ -8,6 +8,7 @@ package me.rerere.rikkahub.ui.pages.chat
 
 import android.net.Uri
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -16,6 +17,9 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DrawerState
 import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LocalContentColor
@@ -35,6 +39,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -57,6 +62,7 @@ import me.rerere.hugeicons.stroke.Cancel01
 import me.rerere.hugeicons.stroke.LeftToRightListBullet
 import me.rerere.hugeicons.stroke.Menu03
 import me.rerere.hugeicons.stroke.MessageAdd01
+import me.rerere.hugeicons.stroke.Puzzle
 import me.rerere.hugeicons.stroke.Voice
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.Screen
@@ -67,6 +73,10 @@ import me.rerere.rikkahub.data.datastore.getCurrentAssistant
 import me.rerere.rikkahub.data.datastore.getCurrentChatModel
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.model.Conversation
+import me.rerere.rikkahub.plugin.manager.PluginManager
+import me.rerere.rikkahub.plugin.model.PluginQuickEntry
+import me.rerere.rikkahub.plugin.model.PluginQuickEntryTarget
+import me.rerere.rikkahub.plugin.model.toQuickEntryOrNull
 import me.rerere.rikkahub.service.ChatError
 import me.rerere.rikkahub.service.VoiceCallService
 import me.rerere.rikkahub.ui.components.ai.ChatInput
@@ -277,6 +287,7 @@ private fun ChatPageContent(
                     conversation = conversation,
                     bigScreen = bigScreen,
                     drawerState = drawerState,
+                    navController = navController,
                     previewMode = previewMode,
                     onNewChat = {
                         navigateToChatPage(navController)
@@ -454,6 +465,9 @@ private fun ChatPageContent(
                 onClearTranslation = { message ->
                     vm.clearTranslationField(message.id)
                 },
+                onGeneratedImageRetry = { message ->
+                    vm.retryGeneratedImage(message)
+                },
                 onJumpToMessage = { index ->
                     previewMode = false
                     scope.launch {
@@ -473,6 +487,15 @@ private fun ChatPageContent(
                     vm.updateConversation(conversation.copy(customSystemPrompt = newPrompt))
                     vm.saveConversationAsync()
                 },
+                onPatAssistant = {
+                    if (loadingJob != null) {
+                        toaster.show("AI 正在回复，请稍后再拍", type = ToastType.Info)
+                    } else {
+                        val assistant = setting.getAssistantById(conversation.assistantId)
+                            ?: setting.getCurrentAssistant()
+                        vm.handlePatAssistant(assistant)
+                    }
+                },
             )
         }
     }
@@ -483,6 +506,7 @@ private fun TopBar(
     settings: Settings,
     conversation: Conversation,
     drawerState: DrawerState,
+    navController: Navigator,
     bigScreen: Boolean,
     previewMode: Boolean,
     onClickMenu: () -> Unit,
@@ -546,6 +570,8 @@ private fun TopBar(
             }
         },
         actions = {
+            PluginQuickEntryButton(navController = navController)
+
             IconButton(
                 onClick = {
                     onVoiceCall()
@@ -606,5 +632,88 @@ private fun TopBar(
                 }
             }
         )
+    }
+}
+
+@Composable
+private fun PluginQuickEntryButton(navController: Navigator) {
+    val pluginManager: PluginManager = koinInject()
+    val plugins by pluginManager.plugins.collectAsStateWithLifecycle()
+    val entries = remember(plugins) {
+        plugins.mapNotNull { it.toQuickEntryOrNull() }
+            .sortedBy { it.pluginName.lowercase() }
+    }
+    var expanded by remember { mutableStateOf(false) }
+
+    Box {
+        IconButton(onClick = { expanded = true }) {
+            Icon(HugeIcons.Puzzle, "插件快捷入口")
+        }
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+        ) {
+            if (entries.isEmpty()) {
+                DropdownMenuItem(
+                    text = { Text("暂无添加到快捷入口的插件") },
+                    onClick = {},
+                    enabled = false,
+                )
+            } else {
+                entries.forEach { entry ->
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                text = entry.pluginName,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        },
+                        leadingIcon = { Icon(HugeIcons.Puzzle, null) },
+                        trailingIcon = {
+                            if (!entry.isEnabled) {
+                                Text(
+                                    text = "已停用",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        },
+                        onClick = {
+                            expanded = false
+                            navigateToPluginQuickEntry(navController, entry)
+                        },
+                    )
+                }
+            }
+            HorizontalDivider()
+            DropdownMenuItem(
+                text = { Text("插件管理") },
+                leadingIcon = { Icon(HugeIcons.Puzzle, null) },
+                onClick = {
+                    expanded = false
+                    navController.navigate(Screen.SettingPlugins)
+                },
+            )
+        }
+    }
+}
+
+private fun navigateToPluginQuickEntry(
+    navController: Navigator,
+    entry: PluginQuickEntry,
+) {
+    when (val target = entry.target) {
+        PluginQuickEntryTarget.DeclarativeUi -> {
+            navController.navigate(Screen.PluginDeclarativeUI(entry.pluginId))
+        }
+
+        is PluginQuickEntryTarget.WebView -> {
+            navController.navigate(Screen.PluginWebView(entry.pluginId, target.entryPath))
+        }
+
+        PluginQuickEntryTarget.MemoryBank -> {
+            navController.navigate(Screen.MemoryBank)
+        }
     }
 }

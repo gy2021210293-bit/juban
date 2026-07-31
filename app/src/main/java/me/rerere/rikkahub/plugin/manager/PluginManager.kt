@@ -86,8 +86,22 @@ class PluginManager(
             val pluginsWithConfig = scannedPlugins.map { plugin ->
                 val savedConfig = repository.getPluginConfig(plugin.manifest.id)
                 val isEnabled = repository.isPluginEnabled(plugin.manifest.id)
+                val savedQuickEntryVisibility =
+                    repository.getPluginQuickEntryVisibility(plugin.manifest.id)
+                val showInQuickEntry = savedQuickEntryVisibility ?: isEnabled
+                if (savedQuickEntryVisibility == null) {
+                    repository.setPluginQuickEntryVisibility(
+                        pluginId = plugin.manifest.id,
+                        visible = showInQuickEntry,
+                    )
+                }
                 val folderId = assignments[plugin.manifest.id]
-                plugin.copy(config = savedConfig, isEnabled = isEnabled, folderId = folderId)
+                plugin.copy(
+                    config = savedConfig,
+                    isEnabled = isEnabled,
+                    showInQuickEntry = showInQuickEntry,
+                    folderId = folderId,
+                )
             }
             // 审计：记录完整性校验失败的插件
             pluginsWithConfig.filter { it.loadError?.contains("完整性校验失败") == true }.forEach { plugin ->
@@ -219,6 +233,12 @@ class PluginManager(
             loader.unloadPlugin(pluginId)
             loadPlugin(plugin.copy(config = config))
         }
+    }
+
+    suspend fun setPluginQuickEntryVisibility(pluginId: String, visible: Boolean) {
+        if (_plugins.value.none { it.manifest.id == pluginId }) return
+        repository.setPluginQuickEntryVisibility(pluginId, visible)
+        updatePluginState(pluginId) { it.copy(showInQuickEntry = visible) }
     }
  
     suspend fun getPluginConfig(pluginId: String): Map<String, JsonElement> {

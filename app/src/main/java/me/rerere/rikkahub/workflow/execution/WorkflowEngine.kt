@@ -6,6 +6,7 @@
 
 package me.rerere.rikkahub.workflow.execution
 
+import android.content.Context
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
@@ -60,6 +61,7 @@ import java.time.ZoneId
  * workflow's own `enabled` flag.
  */
 class WorkflowEngine(
+    private val context: Context,
     private val repository: WorkflowRepository,
     private val settingsStore: SettingsStore,
     private val contextProvider: ContextProvider,
@@ -255,8 +257,60 @@ class WorkflowEngine(
 
         // Execute the action sequence. ActionRunner enforces per-action timeout + HARDLINE.
         val result = actionRunner.run(def.actions, tools)
-        val status = if (result.success) WorkflowRunStatus.SUCCESS else WorkflowRunStatus.FAILED
-        return persistAndReturn(workflowId, firedAtMs, started, status, result.error, result.summary, ledgerId)
+        if (!result.success) {
+            return persistAndReturn(
+                workflowId,
+                firedAtMs,
+                started,
+                WorkflowRunStatus.FAILED,
+                result.error,
+                result.summary,
+                ledgerId,
+            )
+        }
+
+        val wake = def.aiWake
+        if (wake != null) {
+            val dispatch = me.rerere.rikkahub.data.service.ProactiveMessageService.triggerFromWorkflow(
+                context = context,
+                assistantId = authoringAssistant.id.toString(),
+                workflowName = def.name,
+                prompt = wake.prompt,
+                actionOutput = result.dataForAi.takeIf { wake.includeActionOutputs },
+                allowAllToolsAndPlugins = wake.allowAllToolsAndPlugins,
+            )
+            if (dispatch.isFailure) {
+                val reason = dispatch.exceptionOrNull()?.message.orEmpty()
+                return persistAndReturn(
+                    workflowId,
+                    firedAtMs,
+                    started,
+                    WorkflowRunStatus.FAILED,
+                    "ai_wake_dispatch_failed: $reason".take(
+                        me.rerere.rikkahub.workflow.model.WorkflowConstants.MAX_ERROR_LENGTH,
+                    ),
+                    result.summary,
+                    ledgerId,
+                )
+            }
+            auditRepo?.log(
+                category = "workflow",
+                action = "ai_wake_dispatched",
+                target = workflowId,
+                detail = "工作流 '${entity.name}' 已将动作输出交给助手处理",
+                status = "success",
+            )
+        }
+
+        return persistAndReturn(
+            workflowId,
+            firedAtMs,
+            started,
+            WorkflowRunStatus.SUCCESS,
+            null,
+            result.summary,
+            ledgerId,
+        )
     }
 
     /**
@@ -383,10 +437,16 @@ internal object CooldownGate {
  */
 class WorkflowActionRunner {
 
-    data class RunResult(val success: Boolean, val error: String?, val summary: String)
+    data class RunResult(
+        val success: Boolean,
+        val error: String?,
+        val summary: String,
+        val dataForAi: String = summary,
+    )
 
     suspend fun run(actions: List<WorkflowAction>, availableTools: List<Tool>): RunResult {
         val outputs = mutableListOf<String>()
+        val aiOutputs = mutableListOf<String>()
         for ((idx, action) in actions.withIndex()) {
             val argsJson = action.args.toString()
             val hardlineReason = HardlineCommandGuard.checkTool(action.tool, argsJson)
@@ -420,8 +480,15 @@ class WorkflowActionRunner {
             val text = out.filterIsInstance<me.rerere.ai.ui.UIMessagePart.Text>()
                 .joinToString("\n") { it.text }
             outputs += "[$idx] ${action.tool}: ${text.take(200)}"
+            aiOutputs += "[$idx] ${action.tool}: $text"
         }
-        return RunResult(true, null, outputs.joinToString("\n").take(2000))
+        return RunResult(
+            success = true,
+            error = null,
+            summary = outputs.joinToString("\n").take(2000),
+            dataForAi = aiOutputs.joinToString("\n")
+                .take(me.rerere.rikkahub.workflow.model.WorkflowConstants.MAX_AI_WAKE_OUTPUT_LENGTH),
+        )
     }
 
     /**

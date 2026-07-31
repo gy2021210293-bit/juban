@@ -24,6 +24,20 @@ data class WorkflowAction(
 )
 
 /**
+ * Optional post-action handoff back to the assistant.
+ *
+ * The workflow engine dispatches this only after every action succeeds. Action outputs are
+ * bounded before entering the model context. Tool/plugin access is a separate explicit grant
+ * because workflow creation happens in an interactive approval flow but execution is headless.
+ */
+@Serializable
+data class WorkflowAiWake(
+    val prompt: String,
+    val includeActionOutputs: Boolean = true,
+    val allowAllToolsAndPlugins: Boolean = false,
+)
+
+/**
  * Outcome of one workflow fire.
  *  - SUCCESS / FAILED — actually ran
  *  - SKIPPED_CONDITIONS — at least one condition evaluated false
@@ -54,6 +68,8 @@ data class WorkflowDefinition(
     val trigger: TriggerSpec,
     val conditions: List<ConditionSpec> = emptyList(),
     val actions: List<WorkflowAction>,
+    /** Optional assistant wake-up after the action data flow completes successfully. */
+    val aiWake: WorkflowAiWake? = null,
     /** Minimum gap between two consecutive fires in seconds. 0 = no cooldown. */
     val cooldownSeconds: Int = 0,
     /** Max successful+failed fires per local-day. null = unlimited. */
@@ -96,4 +112,6 @@ object WorkflowConstants {
     const val MAX_GEOFENCE_RADIUS_M = 5000
     const val MAX_RUNS_HISTORY = 100
     const val MAX_ERROR_LENGTH = 500
+    const val MAX_AI_WAKE_PROMPT_LENGTH = 2000
+    const val MAX_AI_WAKE_OUTPUT_LENGTH = 12_000
 }

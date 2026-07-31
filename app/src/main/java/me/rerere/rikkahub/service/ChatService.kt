@@ -44,7 +44,11 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.core.ReasoningLevel
 import me.rerere.ai.core.Tool
@@ -68,6 +72,12 @@ import me.rerere.rikkahub.R
 import me.rerere.rikkahub.RouteActivity
 import me.rerere.rikkahub.data.ai.GenerationChunk
 import me.rerere.rikkahub.data.ai.GenerationHandler
+import me.rerere.rikkahub.data.ai.GENERATED_IMAGE_TOOL_NAME
+import me.rerere.rikkahub.data.ai.GeneratedImageStatus
+import me.rerere.rikkahub.data.ai.generatedImageRequestOrNull
+import me.rerere.rikkahub.data.ai.generatedImageStatus
+import me.rerere.rikkahub.data.ai.toCardMessage
+import me.rerere.rikkahub.data.ai.toGeneratedImageRequestOrNull
 import me.rerere.rikkahub.data.ai.mcp.McpManager
 import me.rerere.rikkahub.data.ai.tools.LocalTools
 import me.rerere.rikkahub.data.ai.tools.SystemTools
@@ -106,6 +116,7 @@ import me.rerere.rikkahub.data.model.toMessageNode
 import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.data.repository.FolderRepository
 import me.rerere.rikkahub.data.repository.MemoryRepository
+import me.rerere.rikkahub.data.service.ChatImageGenerationWorker
 import me.rerere.rikkahub.web.BadRequestException
 import me.rerere.rikkahub.web.NotFoundException
 import me.rerere.rikkahub.utils.applyPlaceholders
@@ -375,6 +386,7 @@ class ChatService(
         val conversation = conversationRepo.getConversationById(conversationId)
         if (conversation != null) {
             updateConversation(conversationId, conversation)
+            enqueuePendingGeneratedImages(conversation)
             // 只有当前选中助手与该对话的助手不一致时才写 DataStore，
             // 避免每次打开/切换对话都无条件写入 SELECT_ASSISTANT 触发 settingsFlow 全量重组
             val currentSettings = settingsStore.settingsFlow.value
@@ -883,6 +895,11 @@ class ChatService(
 addAll(localTools.getTools(assistant.localTools, me.rerere.rikkahub.data.ai.tools.ToolInvocationContext(
     callerAssistantId = assistant.id.toString(),
     callerConversationId = conversationId.toString(),
+    callerAssistantName = assistant.name,
+    userPatAction = settings.displaySetting.userPatAction,
+    userPatSuffix = settings.displaySetting.userPatSuffix,
+    imageGenerationSystemPrompt = assistant.imageGenerationSystemPrompt,
+    imageGenerationModelId = settings.imageGenerationModelId.toString(),
 )))
                     // System tools (location, notifications, calendar, alarm, camera)
                     val systemToolsOptions = settings.systemToolsSetting.getEnabledOptions().toMutableSet()
@@ -963,8 +980,37 @@ addAll(localTools.getTools(assistant.localTools, me.rerere.rikkahub.data.ai.tool
             Logging.log(TAG, it.stackTraceToString())
         }.onSuccess {
             val finalConversation = session.saveMutex.withLock {
-                val latest = getConversationFlow(conversationId).value
+                var latest = getConversationFlow(conversationId).value
+                val existingJobIds = latest.messageNodes.flatMap { node ->
+                    node.messages.flatMap { message ->
+                        message.parts.filterIsInstance<UIMessagePart.Image>()
+                            .mapNotNull { it.generatedImageRequestOrNull()?.jobId }
+                    }
+                }.toSet()
+                val requests = latest.currentMessages.flatMap { message ->
+                    message.getTools().filter { it.toolName == GENERATED_IMAGE_TOOL_NAME && it.isExecuted }
+                        .flatMap { tool -> tool.output.filterIsInstance<UIMessagePart.Text>() }
+                        .mapNotNull { output ->
+                            runCatching {
+                                me.rerere.rikkahub.utils.JsonInstant.parseToJsonElement(output.text)
+                                    .jsonObject.toGeneratedImageRequestOrNull()
+                            }.getOrNull()
+                        }
+                }.distinctBy { it.jobId }.filterNot { it.jobId in existingJobIds }
+                val cards = requests.map { it to it.toCardMessage() }
+                if (cards.isNotEmpty()) {
+                    latest = latest.copy(
+                        messageNodes = latest.messageNodes + cards.map { it.second.toMessageNode() },
+                        updateAt = Instant.now(),
+                    )
+                    updateConversation(conversationId, latest)
+                }
                 saveConversation(conversationId, latest)
+                cards.forEach { (request, message) ->
+                    ChatImageGenerationWorker.enqueue(
+                        context, conversationId, message.id, request.jobId
+                    )
+                }
                 latest
             }
 
@@ -1086,6 +1132,74 @@ addAll(localTools.getTools(assistant.localTools, me.rerere.rikkahub.data.ai.tool
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to save assistant message to external memory", e)
+            }
+        }
+    }
+
+    suspend fun updateGeneratedImageCard(
+        conversationId: Uuid,
+        messageId: Uuid,
+        jobId: String,
+        status: GeneratedImageStatus,
+        imageUrl: String,
+        error: String,
+    ): Boolean {
+        val session = sessions[conversationId]
+        val mutex = session?.saveMutex ?: kotlinx.coroutines.sync.Mutex()
+        return mutex.withLock {
+            val current = session?.state?.value ?: conversationRepo.getConversationById(conversationId)
+                ?: return@withLock false
+            var changed = false
+            val updatedNodes = current.messageNodes.map { node ->
+                node.copy(messages = node.messages.map { message ->
+                    if (message.id != messageId) return@map message
+                    message.copy(parts = message.parts.map { part ->
+                        if (part !is UIMessagePart.Image || part.generatedImageRequestOrNull()?.jobId != jobId) {
+                            return@map part
+                        }
+                        changed = true
+                        val metadata = buildJsonObject {
+                            part.metadata?.forEach { (key, value) -> put(key, value) }
+                            put("status", status.wireValue)
+                            if (error.isNotBlank()) put("error", error) else put("error", "")
+                        }
+                        part.copy(url = imageUrl.ifBlank { part.url }, metadata = metadata)
+                    })
+                })
+            }
+            if (!changed) return@withLock false
+            val updated = current.copy(messageNodes = updatedNodes, updateAt = Instant.now())
+            session?.state?.value = updated
+            conversationRepo.updateConversation(updated)
+            true
+        }
+    }
+
+    suspend fun retryGeneratedImage(conversationId: Uuid, messageId: Uuid) {
+        val conversation = sessions[conversationId]?.state?.value
+            ?: conversationRepo.getConversationById(conversationId) ?: return
+        val image = conversation.messageNodes.asSequence().flatMap { it.messages.asSequence() }
+            .firstOrNull { it.id == messageId }?.parts
+            ?.filterIsInstance<UIMessagePart.Image>()?.singleOrNull() ?: return
+        val request = image.generatedImageRequestOrNull() ?: return
+        if (image.generatedImageStatus() != GeneratedImageStatus.FAILED) return
+        if (updateGeneratedImageCard(
+                conversationId, messageId, request.jobId, GeneratedImageStatus.PENDING, "", ""
+            )
+        ) {
+            ChatImageGenerationWorker.retry(context, conversationId, messageId, request.jobId)
+        }
+    }
+
+    private fun enqueuePendingGeneratedImages(conversation: Conversation) {
+        conversation.messageNodes.asSequence().map { it.currentMessage }.forEach { message ->
+            message.parts.filterIsInstance<UIMessagePart.Image>().forEach { image ->
+                val request = image.generatedImageRequestOrNull() ?: return@forEach
+                if (image.generatedImageStatus() == GeneratedImageStatus.PENDING) {
+                    ChatImageGenerationWorker.enqueue(
+                        context, conversation.id, message.id, request.jobId
+                    )
+                }
             }
         }
     }
@@ -1725,6 +1839,14 @@ addAll(localTools.getTools(assistant.localTools, me.rerere.rikkahub.data.ai.tool
         failIfMissing: Boolean = true,
     ) {
         val currentConversation = getConversationFlow(conversationId).value
+        currentConversation.messageNodes.asSequence().flatMap { it.messages.asSequence() }
+            .firstOrNull { it.id == messageId }?.parts
+            ?.filterIsInstance<UIMessagePart.Image>()
+            ?.mapNotNull { it.generatedImageRequestOrNull()?.jobId }
+            ?.forEach { jobId ->
+                androidx.work.WorkManager.getInstance(context)
+                    .cancelUniqueWork(ChatImageGenerationWorker.workName(jobId))
+            }
         val updatedConversation = buildConversationAfterMessageDelete(currentConversation, messageId)
 
         if (updatedConversation == null) {

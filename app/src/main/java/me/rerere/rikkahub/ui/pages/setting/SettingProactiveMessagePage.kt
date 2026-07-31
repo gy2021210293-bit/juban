@@ -52,6 +52,7 @@ fun SettingProactiveMessagePage(vm: SettingVM = koinInject()) {
 
     var showProactiveRiskDialog by remember { mutableStateOf(false) }
     var showAggressiveRiskDialog by remember { mutableStateOf(false) }
+    var showToolAuthorizationRiskDialog by remember { mutableStateOf(false) }
 
     if (showProactiveRiskDialog) {
         RiskConfirmDialog(
@@ -85,6 +86,24 @@ fun SettingProactiveMessagePage(vm: SettingVM = koinInject()) {
                 }
             },
             onDismiss = { showAggressiveRiskDialog = false }
+        )
+    }
+
+    if (showToolAuthorizationRiskDialog) {
+        RiskConfirmDialog(
+            title = "授权全部工具与插件",
+            message = "开启后，后台主动消息和激进模式中的 AI 可以调用该助手已启用的全部工具、MCP、Skill、工作区能力和插件，并自动批准原本需要确认的操作。请只在你信任当前助手、模型和插件时开启。",
+            onConfirm = {
+                showToolAuthorizationRiskDialog = false
+                vm.updateSettings(
+                    settings.copy(
+                        proactiveMessageSetting = settings.proactiveMessageSetting.copy(
+                            allowAllToolsAndPlugins = true,
+                        )
+                    )
+                )
+            },
+            onDismiss = { showToolAuthorizationRiskDialog = false },
         )
     }
 
@@ -149,6 +168,33 @@ fun SettingProactiveMessagePage(vm: SettingVM = koinInject()) {
                             }
                         )
                     }
+                    item(
+                        headlineContent = { Text("授权全部工具与插件") },
+                        supportingContent = {
+                            Text(
+                                "允许后台触发的 AI 使用完整工具面，并自动批准需要确认的工具和插件。默认关闭。"
+                            )
+                        },
+                        trailingContent = {
+                            Switch(
+                                checked = settings.proactiveMessageSetting.allowAllToolsAndPlugins,
+                                onCheckedChange = { enabled ->
+                                    if (enabled) {
+                                        showToolAuthorizationRiskDialog = true
+                                    } else {
+                                        vm.updateSettings(
+                                            settings.copy(
+                                                proactiveMessageSetting =
+                                                    settings.proactiveMessageSetting.copy(
+                                                        allowAllToolsAndPlugins = false,
+                                                    )
+                                            )
+                                        )
+                                    }
+                                },
+                            )
+                        },
+                    )
                     // 悬浮球开关（仅在主动消息启用时显示）
                     if (settings.proactiveMessageSetting.enabled) {
                         val overlayPermissionLauncher = rememberLauncherForActivityResult(

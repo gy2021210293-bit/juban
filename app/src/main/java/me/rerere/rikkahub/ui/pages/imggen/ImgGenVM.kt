@@ -27,13 +27,13 @@ import me.rerere.ai.provider.ImageEditParams
 import me.rerere.ai.provider.ImageGenerationParams
 import me.rerere.ai.provider.ProviderManager
 import me.rerere.ai.ui.ImageAspectRatio
-import me.rerere.ai.ui.ImageGenerationItem
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.datastore.findProvider
 import me.rerere.rikkahub.data.db.entity.GenMediaEntity
 import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.repository.GenMediaRepository
+import me.rerere.rikkahub.data.service.ChatImageGenerationService
 import java.io.File
 import kotlin.coroutines.cancellation.CancellationException
 
@@ -65,6 +65,7 @@ class ImgGenVM(
     val providerManager: ProviderManager,
     val genMediaRepository: GenMediaRepository,
     private val filesManager: FilesManager,
+    private val chatImageGenerationService: ChatImageGenerationService,
 ) : AndroidViewModel(context) {
     private val _prompt = MutableStateFlow("")
     val prompt: StateFlow<String> = _prompt
@@ -171,7 +172,7 @@ class ImgGenVM(
                 val newImages = mutableListOf<GeneratedImage>()
 
                 result.items.forEachIndexed { index, item ->
-                    val imageFile = saveImageToStorage(
+                    val imageFile = chatImageGenerationService.saveImage(
                         item = item,
                         prompt = _prompt.value,
                         modelName = model.displayName,
@@ -234,7 +235,7 @@ class ImgGenVM(
                 val newImages = mutableListOf<GeneratedImage>()
 
                 result.items.forEachIndexed { index, item ->
-                    val imageFile = saveImageToStorage(
+                    val imageFile = chatImageGenerationService.saveImage(
                         item = item,
                         prompt = _prompt.value,
                         modelName = model.displayName,
@@ -264,37 +265,6 @@ class ImgGenVM(
 
     fun cancelGeneration() {
         cancelJob?.cancel()
-    }
-
-    private suspend fun saveImageToStorage(
-        item: ImageGenerationItem,
-        prompt: String,
-        modelName: String,
-        index: Int,
-        type: String = GenMediaEntity.TYPE_IMAGE_GENERATION,
-        sourcePaths: String? = null,
-    ): File {
-        val imagesDir = filesManager.getImagesDir()
-
-        val timestamp = System.currentTimeMillis()
-        val filename = "${timestamp}_${modelName}_$index.png"
-        val imageFile = File(imagesDir, filename)
-
-        val createdFile = filesManager.createImageFileFromBase64(item.data, imageFile.absolutePath)
-
-        // Save to database with relative path
-        val relativePath = "images/${imageFile.name}"
-        val entity = GenMediaEntity(
-            path = relativePath,
-            modelId = modelName,
-            prompt = prompt,
-            createAt = timestamp,
-            type = type,
-            sourcePaths = sourcePaths,
-        )
-        genMediaRepository.insertMedia(entity)
-
-        return createdFile
     }
 
     fun deleteImage(image: GeneratedImage) {

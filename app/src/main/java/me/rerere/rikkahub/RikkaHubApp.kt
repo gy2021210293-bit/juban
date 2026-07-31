@@ -38,6 +38,7 @@ import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.service.DailySummaryService
 import me.rerere.rikkahub.data.service.DeviceEventAiTriggerService
 import me.rerere.rikkahub.data.service.DeviceEventTrackingService
+import me.rerere.rikkahub.data.service.DynamicContextMonitor
 import me.rerere.rikkahub.data.service.ProactiveMessageService
 import me.rerere.rikkahub.data.service.SupabaseSyncService
 import me.rerere.rikkahub.service.ChatService
@@ -122,6 +123,9 @@ class RikkaHubApp : Application() {
 
         // Start workflow trigger registry (event-driven automation)
         startWorkflowTriggers()
+
+        // Start process-local dynamic context tracking only when the user enabled it.
+        startDynamicContextIfEnabled()
 
         // Start network change monitor (invalidates SSH DNS cache on WiFi<->cell handoff)
         startNetworkChangeMonitor()
@@ -210,6 +214,18 @@ class RikkaHubApp : Application() {
             registry.start()
         }.onFailure {
             Log.e(TAG, "startWorkflowTriggers failed", it)
+        }
+    }
+
+    private fun startDynamicContextIfEnabled() {
+        get<AppScope>().launch {
+            runCatching {
+                val enabled = get<SettingsStore>().settingsFlowRaw.first()
+                    .systemToolsSetting.dynamicContextEnabled
+                get<DynamicContextMonitor>().setEnabled(enabled)
+            }.onFailure {
+                Log.e(TAG, "startDynamicContextIfEnabled failed", it)
+            }
         }
     }
 

@@ -653,6 +653,8 @@ enum class ChatFontFamily {
 data class DisplaySetting(
     val userAvatar: Avatar = Avatar.Dummy,
     val userNickname: String = "",
+    val userPatAction: String = "拍了拍",
+    val userPatSuffix: String = "",
     val useAppIconStyleLoadingIndicator: Boolean = true,
     val showUserAvatar: Boolean = true,
     val showAssistantBubble: Boolean = false,
