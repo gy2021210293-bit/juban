@@ -299,7 +299,7 @@ class PluginLoader(
     private fun buildLifecycleContext(plugin: LoadedPlugin, eventType: String): JsonObject {
         return buildJsonObject {
             put("type", eventType)
-            put("timestamp", System.currentTimeTimeMillis())
+            put("timestamp", System.currentTimeMillis())
             put("pluginId", plugin.id)
             put("pluginName", plugin.name)
             put("version", plugin.info.manifest.version)
