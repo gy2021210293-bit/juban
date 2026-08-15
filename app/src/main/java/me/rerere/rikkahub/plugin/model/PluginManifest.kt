@@ -77,7 +77,10 @@ data class PluginManifest(
     /**
      * 插件提示词模板，当 inject_as_prompt 配置开启时，
      * 此模板内容会被注入到系统提示词中，
-     * 让 AI 知晓可以使用该插件的工具
+     * 让 AI 知晓可以使用该插件的工具。
+     *
+     * 需要实时上下文时，新插件也可以导出 providePrompt(ctx)，
+     * 并在 permissions 中声明 prompt_inject。
      */
     val promptTemplate: String? = null,
 
@@ -90,16 +93,22 @@ data class PluginManifest(
     val ui: PluginUIDeclaration? = null,
 
     /**
-     * 插件事件钩子声明
-     * 插件通过此字段声明需要监听的事件和对应的处理函数
-     * 支持的事件: message_sent, message_received, daily_cron
+     * 插件事件钩子声明。
+     *
+     * 兼容事件: message_sent, message_received, daily_cron。
+     * 新版运行时同时会将它们映射到统一事件名称，并发送给可选的 onEvent(event)。
      */
     val hooks: List<PluginHook> = emptyList(),
 
     /**
-     * 插件权限声明
-     * 支持的权限:
-     * - "ai_chat": 允许插件调用 AI 生成文本（Bridge.callAI）
+     * 插件权限声明。
+     *
+     * 运行时权限:
+     * - "prompt_inject": 允许 providePrompt(ctx) 动态注入上游 system prompt
+     * - "ai_chat": 允许事件/定时 handler 通过 hostAction=ai.wake 自主唤醒 AI
+     * - "ai_tools": 与 ai_chat 配合，允许自主 AI 唤醒请求后台使用工具/插件
+     *
+     * WebView 权限:
      * - "disable_native_selection": 禁用 WebView 原生长按选择菜单，由 JS 自行处理选区
      */
     val permissions: List<String> = emptyList(),
@@ -248,8 +257,8 @@ data class ConfigOption(
 @Serializable
 data class PluginHook(
     /**
-     * 事件名称
-     * 支持: "message_sent", "message_received", "daily_cron"
+     * 事件名称。
+     * 兼容: "message_sent", "message_received", "daily_cron"。
      */
     val event: String,
 
@@ -259,8 +268,10 @@ data class PluginHook(
     val handler: String,
 
     /**
-     * Cron 表达式（仅 daily_cron 事件使用）
-     * 例如: "0 3 * * *" 表示每天凌晨3点
+     * Cron 表达式（daily_cron 事件使用）。
+     * 每个 hook 会按照自己的 schedule 独立计算触发时间。
+     * 支持标准 5-field cron，以及 CronExpressionParser 支持的 @hourly、@daily、@every 等形式。
+     * 为空时兼容旧行为，默认使用 "0 3 * * *"。
      */
     val schedule: String? = null
 )
