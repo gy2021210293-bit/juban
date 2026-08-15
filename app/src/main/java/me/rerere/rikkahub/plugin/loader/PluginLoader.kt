@@ -9,13 +9,16 @@ package me.rerere.rikkahub.plugin.loader
 import android.content.Context
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.put
 import me.rerere.ai.provider.ProviderSetting
-import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.datastore.findProvider
@@ -24,12 +27,32 @@ import me.rerere.rikkahub.plugin.data.PluginDataStore
 import me.rerere.rikkahub.plugin.model.PluginInfo
 import okhttp3.OkHttpClient
 import java.util.concurrent.Executors
-import kotlinx.coroutines.asCoroutineDispatcher
 import kotlin.uuid.Uuid
+
+/**
+ * 插件动态提示词。
+ * priority 越大，越靠前注入 system prompt。
+ */
+data class PluginPromptInjection(
+    val pluginId: String,
+    val text: String,
+    val priority: Int = 0,
+)
+
+/**
+ * 插件声明的定时 hook。
+ */
+data class PluginScheduledHook(
+    val pluginId: String,
+    val handler: String,
+    val schedule: String,
+)
  
 /**
- * 插件加载器
- * 负责加载和管理插件生命周期
+ * 插件加载器。
+ *
+ * 除原有 tool/hook 调用外，这里同时承担插件运行时的最小生命周期、统一事件分发、
+ * 动态提示词提供和定时 hook 元数据暴露。旧版插件无需修改即可继续工作。
  */
 class PluginLoader(
     private val context: Context,
@@ -40,22 +63,9 @@ class PluginLoader(
  
     companion object {
         private const val TAG = "PluginLoader"
-        /**
-         * 单个插件 hook 执行的协程级超时。
-         *
-         * 设为略大于 nativeFetch 的最长超时上限 (15s), 避免协程层先于网络层触发,
-         * 误把"请求还在正常进行"报成"超时"。
-         *
-         * 重要限制 (如实说明): 这层 withTimeoutOrNull 只能让"等待这次 hook 调用结果"
-         * 提前放弃, 无法真正打断 QuickJS 引擎内部正在执行的同步 JS 代码 (比如
-         * nativeFetch 内部还在跑的 OkHttp 请求)。因为 callEvent 全程跑在单线程
-         * pluginDispatcher 上, 即使外层已放弃等待, 这个单线程仍会被卡住的那次调用
-         * 占用, 直到底层请求真正结束 (最长 15s)。期间排在后面的其它 hook 调用、
-         * 以及 callTool (也走这个 dispatcher) 都要继续排队。这是 QuickJS 单线程
-         * 模型的本质限制, 核心阻塞问题已由 ChatService 改为 fire-and-forget 解决,
-         * 这一层只是给"事件处理"一个明确失败信号和日志, 不是彻底防死锁。
-         */
         private const val HOOK_TIMEOUT_MS = 16_500L
+        private const val DEFAULT_DAILY_CRON = "0 3 * * *"
+        const val PERMISSION_PROMPT_INJECT = "prompt_inject"
     }
  
     // 单线程调度器，确保所有 QuickJS 操作在同一线程执行
@@ -67,7 +77,10 @@ class PluginLoader(
     private val loadedPlugins = mutableMapOf<String, LoadedPlugin>()
  
     /**
-     * 加载插件
+     * 加载插件。
+     *
+     * 新版约定：若插件导出了 onLoad/onEnable，则宿主会自动调用；
+     * 同时如果导出了 onEvent，还会收到 plugin.loaded/plugin.enabled 统一事件。
      */
     suspend fun loadPlugin(pluginInfo: PluginInfo): Result<LoadedPlugin> = withContext(pluginDispatcher) {
         try {
@@ -86,16 +99,13 @@ class PluginLoader(
                 )
             }
  
-            // 为此插件创建独立的 PluginDataStore，并注入沙箱
             val dataStore = PluginDataStore(context, pluginInfo.manifest.id)
-
             val sandbox = PluginSandbox(context, okHttpClient, memoryBankService, dataStore)
             sandbox.allowedHosts = pluginInfo.manifest.allowedHosts
             sandbox.initialize()
  
             val resolvedConfig = resolveModelConfig(pluginInfo)
             sandbox.injectConfig(resolvedConfig)
- 
             sandbox.evaluateFile(entryFile)
  
             val loadedPlugin = LoadedPlugin(
@@ -114,19 +124,42 @@ class PluginLoader(
                 }
             }
  
+            // 先放入运行时缓存，再执行生命周期回调。这样回调期间插件已处于可发现状态。
             loadedPlugins[pluginInfo.manifest.id] = loadedPlugin
+
+            val loadContext = buildLifecycleContext(loadedPlugin, "plugin.loaded")
+            invokeOptionalFunction(loadedPlugin, "onLoad", loadContext)
+            dispatchGenericEvent(loadedPlugin, "plugin.loaded", loadContext)
+
+            val enableContext = buildLifecycleContext(loadedPlugin, "plugin.enabled")
+            invokeOptionalFunction(loadedPlugin, "onEnable", enableContext)
+            dispatchGenericEvent(loadedPlugin, "plugin.enabled", enableContext)
+
             Result.success(loadedPlugin)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to load plugin ${pluginInfo.manifest.id}", e)
+            loadedPlugins.remove(pluginInfo.manifest.id)?.sandbox?.destroy()
             Result.failure(e)
         }
     }
  
-    private fun doUnloadPlugin(pluginId: String) {
-        loadedPlugins.remove(pluginId)?.let { plugin ->
-            plugin.sandbox.destroy()
-            Log.d(TAG, "Unloaded plugin: $pluginId")
-        }
+    /**
+     * 卸载插件，并补齐 disable/unload 生命周期。
+     */
+    private suspend fun doUnloadPlugin(pluginId: String) {
+        val plugin = loadedPlugins[pluginId] ?: return
+
+        val disableContext = buildLifecycleContext(plugin, "plugin.disabled")
+        invokeOptionalFunction(plugin, "onDisable", disableContext)
+        dispatchGenericEvent(plugin, "plugin.disabled", disableContext)
+
+        val unloadContext = buildLifecycleContext(plugin, "plugin.unloaded")
+        invokeOptionalFunction(plugin, "onUnload", unloadContext)
+        dispatchGenericEvent(plugin, "plugin.unloaded", unloadContext)
+
+        loadedPlugins.remove(pluginId)
+        plugin.sandbox.destroy()
+        Log.d(TAG, "Unloaded plugin: $pluginId")
     }
  
     suspend fun unloadPlugin(pluginId: String) = withContext(pluginDispatcher) {
@@ -142,7 +175,7 @@ class PluginLoader(
     fun getEnabledPlugins(): List<LoadedPlugin> = loadedPlugins.values.filter { it.info.isEnabled }
  
     /**
-     * 调用插件工具
+     * 调用插件工具。
      */
     suspend fun callTool(pluginId: String, toolName: String, params: JsonElement): Result<JsonElement> {
         return withContext(pluginDispatcher) {
@@ -164,48 +197,199 @@ class PluginLoader(
     }
  
     /**
-     * 触发插件事件
+     * 触发插件事件。
      *
-     * 对订阅了该事件的每个插件 hook, 在单线程 pluginDispatcher 上串行执行。
-     * 每次调用包一层 [HOOK_TIMEOUT_MS] 超时, 超时后记录警告并跳过, 继续处理
-     * 同批次其它插件的 hook, 不让单个插件拖累整批。
+     * 兼容两种监听方式：
+     * 1. 旧版 manifest.hooks：message_sent/message_received/daily_cron 等；
+     * 2. 新版统一入口 exports.onEvent(event)，无需为每个事件单独声明 handler。
+     *
+     * onEvent 收到的事件格式：
+     * { type, legacyType, timestamp, pluginId, data }
      */
     suspend fun callEvent(event: String, params: JsonElement) {
         withContext(pluginDispatcher) {
-            for (plugin in loadedPlugins.values) {
+            for (plugin in loadedPlugins.values.toList()) {
                 if (!plugin.info.isEnabled) continue
+
                 val matchingHooks = plugin.info.manifest.hooks.filter { it.event == event }
                 for (hook in matchingHooks) {
-                    try {
-                        if (!plugin.sandbox.hasFunction(hook.handler)) {
-                            Log.w(TAG, "Hook handler '${hook.handler}' not found in plugin ${plugin.id}")
-                            continue
-                        }
-                        val completed = withTimeoutOrNull(HOOK_TIMEOUT_MS) {
-                            plugin.sandbox.callFunction(hook.handler, params)
-                        }
-                        if (completed == null) {
-                            Log.w(
-                                TAG,
-                                "Plugin hook timed out after ${HOOK_TIMEOUT_MS}ms: " +
-                                    "plugin=${plugin.id}, handler='${hook.handler}', event='$event'"
-                            )
-                        } else {
-                            Log.d(TAG, "Event '$event' handled by plugin ${plugin.id}.${hook.handler}")
-                        }
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Failed to handle event='$event' in plugin=${plugin.id}.${hook.handler}", e)
+                    invokeOptionalFunction(
+                        plugin = plugin,
+                        functionName = hook.handler,
+                        params = params,
+                        logLabel = "event='$event'"
+                    )
+                }
+
+                // 如果旧版 hook 已经显式把 onEvent 作为 handler，则不重复调用。
+                if (matchingHooks.none { it.handler == "onEvent" }) {
+                    val canonicalType = canonicalEventName(event)
+                    val envelope = buildJsonObject {
+                        put("type", canonicalType)
+                        put("legacyType", event)
+                        put("timestamp", System.currentTimeMillis())
+                        put("pluginId", plugin.id)
+                        put("data", params)
                     }
+                    dispatchGenericEvent(plugin, canonicalType, envelope)
                 }
             }
         }
     }
+
+    /**
+     * 每次上游模型请求前调用插件的 providePrompt(ctx)。
+     *
+     * 为避免任意插件静默修改系统提示词，动态提示词需要 manifest.permissions
+     * 显式包含 prompt_inject。providePrompt 可返回：
+     * - 字符串；
+     * - { "text": "...", "priority": 10 }。
+     */
+    suspend fun getDynamicPromptInjections(): List<PluginPromptInjection> = withContext(pluginDispatcher) {
+        loadedPlugins.values
+            .asSequence()
+            .filter { it.info.isEnabled }
+            .filter { PERMISSION_PROMPT_INJECT in it.info.manifest.permissions }
+            .filter { it.sandbox.hasFunction("providePrompt") }
+            .mapNotNull { plugin ->
+                val promptContext = buildJsonObject {
+                    put("pluginId", plugin.id)
+                    put("pluginName", plugin.name)
+                    put("timestamp", System.currentTimeMillis())
+                }
+
+                val result = withTimeoutOrNull(HOOK_TIMEOUT_MS) {
+                    plugin.sandbox.callFunction("providePrompt", promptContext)
+                }
+
+                if (result == null) {
+                    Log.w(TAG, "Dynamic prompt timed out: plugin=${plugin.id}")
+                    return@mapNotNull null
+                }
+
+                parsePromptInjection(plugin.id, result)
+            }
+            .sortedByDescending { it.priority }
+            .toList()
+    }
+
+    /**
+     * 读取所有 daily_cron hook 及各自 schedule。
+     * schedule 为空时沿用旧行为：每天 03:00。
+     */
+    fun getScheduledHooks(): List<PluginScheduledHook> {
+        return loadedPlugins.values
+            .filter { it.info.isEnabled }
+            .flatMap { plugin ->
+                plugin.info.manifest.hooks
+                    .filter { it.event == "daily_cron" }
+                    .map { hook ->
+                        PluginScheduledHook(
+                            pluginId = plugin.id,
+                            handler = hook.handler,
+                            schedule = hook.schedule?.takeIf { it.isNotBlank() } ?: DEFAULT_DAILY_CRON,
+                        )
+                    }
+            }
+    }
  
+    /**
+     * 旧接口保留给现有 DailySummaryService 使用。
+     */
     fun getPluginsWithDailyCron(): List<Pair<LoadedPlugin, String>> {
         return loadedPlugins.values.filter { it.info.isEnabled }.flatMap { plugin ->
             plugin.info.manifest.hooks
                 .filter { it.event == "daily_cron" }
                 .map { hook -> plugin to hook.handler }
+        }
+    }
+
+    private suspend fun invokeOptionalFunction(
+        plugin: LoadedPlugin,
+        functionName: String,
+        params: JsonElement,
+        logLabel: String = functionName,
+    ) {
+        if (!plugin.sandbox.hasFunction(functionName)) return
+
+        try {
+            val completed = withTimeoutOrNull(HOOK_TIMEOUT_MS) {
+                plugin.sandbox.callFunction(functionName, params)
+            }
+            if (completed == null) {
+                Log.w(
+                    TAG,
+                    "Plugin callback timed out after ${HOOK_TIMEOUT_MS}ms: " +
+                        "plugin=${plugin.id}, function='$functionName', $logLabel"
+                )
+            } else {
+                Log.d(TAG, "Plugin callback completed: plugin=${plugin.id}, function=$functionName, $logLabel")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Plugin callback failed: plugin=${plugin.id}, function=$functionName, $logLabel", e)
+        }
+    }
+
+    private suspend fun dispatchGenericEvent(
+        plugin: LoadedPlugin,
+        eventType: String,
+        data: JsonElement,
+    ) {
+        if (!plugin.sandbox.hasFunction("onEvent")) return
+
+        val envelope = if (data is JsonObject && data.containsKey("type")) {
+            data
+        } else {
+            buildJsonObject {
+                put("type", eventType)
+                put("timestamp", System.currentTimeMillis())
+                put("pluginId", plugin.id)
+                put("data", data)
+            }
+        }
+        invokeOptionalFunction(plugin, "onEvent", envelope, "type='$eventType'")
+    }
+
+    private fun buildLifecycleContext(plugin: LoadedPlugin, eventType: String): JsonObject {
+        return buildJsonObject {
+            put("type", eventType)
+            put("timestamp", System.currentTimeMillis())
+            put("pluginId", plugin.id)
+            put("pluginName", plugin.name)
+            put("version", plugin.info.manifest.version)
+        }
+    }
+
+    private fun canonicalEventName(event: String): String {
+        return when (event) {
+            "message_sent" -> "chat.user_message"
+            "message_received" -> "chat.assistant_message"
+            "daily_cron" -> "scheduler.daily_cron"
+            "app_started" -> "app.started"
+            "app_foreground" -> "app.foreground"
+            "app_background" -> "app.background"
+            else -> event.replace('_', '.')
+        }
+    }
+
+    private fun parsePromptInjection(pluginId: String, result: JsonElement): PluginPromptInjection? {
+        return when (result) {
+            is JsonPrimitive -> {
+                val text = result.contentOrNull?.trim().orEmpty()
+                text.takeIf { it.isNotEmpty() }?.let {
+                    PluginPromptInjection(pluginId = pluginId, text = it)
+                }
+            }
+            is JsonObject -> {
+                val text = (result["text"] as? JsonPrimitive)?.contentOrNull?.trim().orEmpty()
+                if (text.isEmpty()) return null
+                val priority = (result["priority"] as? JsonPrimitive)
+                    ?.contentOrNull
+                    ?.toIntOrNull()
+                    ?: 0
+                PluginPromptInjection(pluginId = pluginId, text = text, priority = priority)
+            }
+            else -> null
         }
     }
  
