@@ -25,6 +25,7 @@ import me.rerere.rikkahub.CHAT_COMPLETED_NOTIFICATION_CHANNEL_ID
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.plugin.loader.PluginLoader
 import me.rerere.rikkahub.plugin.loader.PluginScheduledHook
+import me.rerere.rikkahub.service.CronExpressionParser
 import org.koin.core.context.GlobalContext
 import java.time.ZonedDateTime
 import kotlin.math.abs
