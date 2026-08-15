@@ -1,0 +1,111 @@
+name: Plugin Runtime Debug APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - agent/plugin-runtime-foundation
+    paths:
+      - 'app/**'
+      - 'ai/**'
+      - 'common/**'
+      - 'document/**'
+      - 'highlight/**'
+      - 'material3/**'
+      - 'search/**'
+      - 'speech/**'
+      - 'web/**'
+      - 'workspace/**'
+      - 'plugins/example/runtime-wake-test/**'
+      - 'gradle/**'
+      - 'gradlew'
+      - 'gradlew.bat'
+      - 'settings.gradle.kts'
+      - 'build.gradle.kts'
+      - 'gradle.properties'
+      - '.github/workflows/plugin-runtime-debug.yml'
+
+jobs:
+  build-debug:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android 37 platform
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager 'platforms;android-37'
+
+      - name: Prepare shared debug keystore
+        run: |
+          if [ ! -f app/debug.keystore ]; then
+            keytool -genkeypair -v \
+              -keystore app/debug.keystore \
+              -storepass android \
+              -alias androiddebugkey \
+              -keypass android \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -dname 'CN=Android Debug,O=Android,C=US'
+          fi
+
+      - name: Build Debug APK
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:assembleDebug --stacktrace
+
+      - name: Prepare phone test package
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+
+          APK=$(find app/build/outputs/apk -type f -name '*universal*debug*.apk' | head -n 1 || true)
+          if [ -z "$APK" ]; then
+            APK=$(find app/build/outputs/apk -type f -name '*debug*.apk' | head -n 1 || true)
+          fi
+          if [ -z "$APK" ]; then
+            echo 'No debug APK found'
+            find app/build/outputs/apk -type f || true
+            exit 1
+          fi
+
+          cp "$APK" dist/OrangeChat-plugin-runtime-test-debug.apk
+          (
+            cd plugins/example/runtime-wake-test
+            zip -j "$GITHUB_WORKSPACE/dist/runtime-wake-test.zip" manifest.json main.js
+          )
+
+          cat > dist/PHONE_TEST_README.txt <<'EOF'
+          OrangeChat 插件运行时手机测试
+
+          1. 安装 OrangeChat-plugin-runtime-test-debug.apk。
+             Debug 包 applicationId 带 .debug，可与正式版并存。
+          2. 在 Debug App 中先配置一个可正常聊天的 AI 模型/助手。
+          3. 导入 runtime-wake-test.zip，并确认插件已启用、允许 ai_chat 权限。
+          4. 保持插件启用。测试插件按 */5 * * * * 运行，即每 5 分钟一个计划点。
+          5. 成功时，AI 会在正常聊天记录里主动发出：插件自主唤醒测试成功。
+          6. 若手机限制后台闹钟，请给 Debug App 允许“闹钟和提醒/精确闹钟”，并关闭电池优化后再测。
+          EOF
+
+          ls -lh dist
+
+      - name: Upload phone test package
+        uses: actions/upload-artifact@v4
+        with:
+          name: OrangeChat-plugin-runtime-phone-test
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
