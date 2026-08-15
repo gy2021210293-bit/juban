@@ -21,8 +21,8 @@ import me.rerere.rikkahub.plugin.manager.PluginManager
 import me.rerere.rikkahub.plugin.model.PluginToolDefinition
 
 /**
- * 插件工具提供者
- * 将插件工具转换为AI可用的Tool对象
+ * 插件工具提供者。
+ * 将插件工具和插件提供的上下文接入模型请求。
  */
 class PluginToolProvider(
     private val pluginLoader: PluginLoader,
@@ -34,11 +34,10 @@ class PluginToolProvider(
     }
 
     /**
-     * 获取所有插件提供的工具
-     * 会等待插件初始化完成，确保竞态条件下不会返回空列表
+     * 获取所有插件提供的工具。
+     * 会等待插件初始化完成，确保竞态条件下不会返回空列表。
      */
     suspend fun getTools(): List<Tool> {
-        // 等待插件初始化完成，避免竞态条件导致工具列表为空
         pluginManager.awaitInitialization()
         return pluginLoader.getAllLoadedPlugins().flatMap { plugin ->
             plugin.info.manifest.tools.map { toolDef ->
@@ -48,7 +47,7 @@ class PluginToolProvider(
     }
 
     /**
-     * 获取指定插件的工具
+     * 获取指定插件的工具。
      */
     suspend fun getPluginTools(pluginId: String): List<Tool> {
         pluginManager.awaitInitialization()
@@ -59,7 +58,7 @@ class PluginToolProvider(
     }
 
     /**
-     * 创建Tool对象
+     * 创建 Tool 对象。
      */
     private fun createTool(plugin: LoadedPlugin, toolDef: PluginToolDefinition): Tool {
         return Tool(
@@ -78,9 +77,6 @@ class PluginToolProvider(
         )
     }
 
-    /**
-     * 构建工具描述
-     */
     private fun buildDescription(plugin: LoadedPlugin, toolDef: PluginToolDefinition): String {
         val sb = StringBuilder()
         sb.appendLine(toolDef.description)
@@ -89,9 +85,6 @@ class PluginToolProvider(
         return sb.toString().trim()
     }
 
-    /**
-     * 构建参数定义
-     */
     private fun buildParameters(toolDef: PluginToolDefinition): JsonObject {
         return buildJsonObject {
             toolDef.parameters.forEach { param ->
@@ -100,25 +93,19 @@ class PluginToolProvider(
                     if (param.description != null) {
                         put("description", param.description)
                     }
-                    // 根据类型添加额外信息
                     when (param.type) {
                         "array" -> {
                             put("items", buildJsonObject {
                                 put("type", "string")
                             })
                         }
-                        "object" -> {
-                            // 可以在这里添加properties定义
-                        }
+                        "object" -> Unit
                     }
                 })
             }
         }
     }
 
-    /**
-     * 执行工具
-     */
     private suspend fun executeTool(
         plugin: LoadedPlugin,
         toolDef: PluginToolDefinition,
@@ -146,23 +133,22 @@ class PluginToolProvider(
     }
 
     /**
-     * 获取插件的提示词注入
+     * 获取插件提示词注入。
      *
-     * 第一个元素: 自动生成的"插件能力总览"(当存在声明了工具的插件时),
-     *             让模型不仅"看见"插件工具, 还被明确提醒要主动使用.
-     * 后续元素: 各插件 manifest.promptTemplate 中开启了 inject_as_prompt 的模板(保留原机制).
+     * 兼容三层来源：
+     * 1. 已加载插件工具的能力总览；
+     * 2. 旧版 manifest.promptTemplate + inject_as_prompt；
+     * 3. 新版 exports.providePrompt(ctx) 动态上下文。
+     *
+     * 动态上下文会在每次模型请求前重新计算，所以插件可以把实时状态、角色状态、
+     * 经营/养成进度等内容直接带入上游 system prompt，而不是只能依赖工具被动查询。
      */
     suspend fun getPluginPromptInjections(): List<String> {
-        // 等待插件初始化完成，避免竞态条件
         pluginManager.awaitInitialization()
 
         val pluginsWithTools = pluginLoader.getAllLoadedPlugins()
             .filter { it.info.manifest.tools.isNotEmpty() }
 
-        // 只保留"主动性引导"这句话 + 插件名字列表,
-        // 不再逐条重复每个工具的 name/description——完整的工具定义
-        // (含 name/description/参数 schema) 已独立存在于发给模型的 tools 参数里,
-        // 在这里重复列一遍是纯粹的体积浪费。
         val overview = if (pluginsWithTools.isNotEmpty()) {
             val pluginNames = pluginsWithTools.joinToString("、") { it.info.manifest.name }
             "你当前装载了以下插件提供的工具（完整工具列表和参数见 tools 定义）：${pluginNames}。" +
@@ -175,26 +161,31 @@ class PluginToolProvider(
         val manualTemplates = pluginLoader.getAllLoadedPlugins().mapNotNull { plugin ->
             val manifest = plugin.info.manifest
             val promptTemplate = manifest.promptTemplate ?: return@mapNotNull null
-            // 检查 inject_as_prompt 配置是否开启
             val injectConfig = plugin.info.config["inject_as_prompt"]
             val shouldInject = when (injectConfig) {
-                is kotlinx.serialization.json.JsonPrimitive -> {
-                    injectConfig.content == "true"
-                }
+                is kotlinx.serialization.json.JsonPrimitive -> injectConfig.content == "true"
                 else -> false
             }
             if (shouldInject) promptTemplate else null
         }
 
+        val dynamicTemplates = pluginLoader.getDynamicPromptInjections().map { injection ->
+            val plugin = pluginLoader.getLoadedPlugin(injection.pluginId)
+            val pluginName = plugin?.name ?: injection.pluginId
+            buildString {
+                appendLine("<plugin-context id=\"${injection.pluginId}\" name=\"$pluginName\">")
+                appendLine(injection.text)
+                append("</plugin-context>")
+            }
+        }
+
         return buildList {
             if (overview != null) add(overview)
             addAll(manualTemplates)
+            addAll(dynamicTemplates)
         }
     }
 
-    /**
-     * 获取工具统计信息
-     */
     fun getToolStats(): ToolStats {
         val plugins = pluginLoader.getAllLoadedPlugins()
         val totalTools = plugins.sumOf { it.info.manifest.tools.size }
@@ -213,18 +204,12 @@ class PluginToolProvider(
         )
     }
 
-    /**
-     * 工具统计信息
-     */
     data class ToolStats(
         val totalPlugins: Int,
         val totalTools: Int,
         val pluginDetails: List<PluginToolDetail>
     )
 
-    /**
-     * 插件工具详情
-     */
     data class PluginToolDetail(
         val pluginId: String,
         val pluginName: String,
