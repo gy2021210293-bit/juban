@@ -5,10 +5,9 @@
  */
 
 package me.rerere.rikkahub.plugin.loader
- 
+
 import android.content.Context
 import android.util.Log
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -29,30 +28,21 @@ import okhttp3.OkHttpClient
 import java.util.concurrent.Executors
 import kotlin.uuid.Uuid
 
-/**
- * 插件动态提示词。
- * priority 越大，越靠前注入 system prompt。
- */
 data class PluginPromptInjection(
     val pluginId: String,
     val text: String,
     val priority: Int = 0,
 )
 
-/**
- * 插件声明的定时 hook。
- */
 data class PluginScheduledHook(
     val pluginId: String,
     val handler: String,
     val schedule: String,
 )
- 
+
 /**
  * 插件加载器。
- *
- * 除原有 tool/hook 调用外，这里同时承担插件运行时的最小生命周期、统一事件分发、
- * 动态提示词提供和定时 hook 元数据暴露。旧版插件无需修改即可继续工作。
+ * 在原有 tool/hook 能力之上补充最小生命周期、统一事件入口和动态提示词能力。
  */
 class PluginLoader(
     private val context: Context,
@@ -60,62 +50,49 @@ class PluginLoader(
     private val memoryBankService: MemoryBankService? = null,
     private val settingsStore: SettingsStore? = null
 ) {
- 
     companion object {
         private const val TAG = "PluginLoader"
         private const val HOOK_TIMEOUT_MS = 16_500L
         private const val DEFAULT_DAILY_CRON = "0 3 * * *"
         const val PERMISSION_PROMPT_INJECT = "prompt_inject"
     }
- 
-    // 单线程调度器，确保所有 QuickJS 操作在同一线程执行
+
     private val pluginDispatcher = Executors.newSingleThreadExecutor { r ->
         Thread(r, "plugin-quickjs").apply { isDaemon = true }
     }.asCoroutineDispatcher()
- 
-    // 已加载的插件缓存
+
     private val loadedPlugins = mutableMapOf<String, LoadedPlugin>()
- 
-    /**
-     * 加载插件。
-     *
-     * 新版约定：若插件导出了 onLoad/onEnable，则宿主会自动调用；
-     * 同时如果导出了 onEvent，还会收到 plugin.loaded/plugin.enabled 统一事件。
-     */
+
     suspend fun loadPlugin(pluginInfo: PluginInfo): Result<LoadedPlugin> = withContext(pluginDispatcher) {
         try {
             if (loadedPlugins.containsKey(pluginInfo.manifest.id)) {
                 doUnloadPlugin(pluginInfo.manifest.id)
             }
- 
+
             if (!pluginInfo.isEnabled) {
                 return@withContext Result.failure(IllegalStateException("Plugin is disabled"))
             }
- 
+
             val entryFile = pluginInfo.getEntryFile()
             if (!entryFile.exists()) {
                 return@withContext Result.failure(
                     IllegalStateException("Entry file not found: ${pluginInfo.manifest.entry}")
                 )
             }
- 
+
             val dataStore = PluginDataStore(context, pluginInfo.manifest.id)
             val sandbox = PluginSandbox(context, okHttpClient, memoryBankService, dataStore)
             sandbox.allowedHosts = pluginInfo.manifest.allowedHosts
             sandbox.initialize()
- 
+
             val resolvedConfig = resolveModelConfig(pluginInfo)
             sandbox.injectConfig(resolvedConfig)
             sandbox.evaluateFile(entryFile)
- 
-            val loadedPlugin = LoadedPlugin(
-                info = pluginInfo,
-                sandbox = sandbox
-            )
- 
+
+            val loadedPlugin = LoadedPlugin(info = pluginInfo, sandbox = sandbox)
             val exportedNames = sandbox.getExportedFunctionNames()
             Log.i(TAG, "Plugin ${pluginInfo.manifest.id} exported functions: $exportedNames")
- 
+
             pluginInfo.manifest.tools.forEach { tool ->
                 if (!sandbox.hasFunction(tool.name)) {
                     Log.w(TAG, "Tool '${tool.name}' declared in manifest but not found in exports (available: $exportedNames)")
@@ -123,8 +100,7 @@ class PluginLoader(
                     Log.i(TAG, "Tool '${tool.name}' registered successfully")
                 }
             }
- 
-            // 先放入运行时缓存，再执行生命周期回调。这样回调期间插件已处于可发现状态。
+
             loadedPlugins[pluginInfo.manifest.id] = loadedPlugin
 
             val loadContext = buildLifecycleContext(loadedPlugin, "plugin.loaded")
@@ -142,10 +118,7 @@ class PluginLoader(
             Result.failure(e)
         }
     }
- 
-    /**
-     * 卸载插件，并补齐 disable/unload 生命周期。
-     */
+
     private suspend fun doUnloadPlugin(pluginId: String) {
         val plugin = loadedPlugins[pluginId] ?: return
 
@@ -161,50 +134,38 @@ class PluginLoader(
         plugin.sandbox.destroy()
         Log.d(TAG, "Unloaded plugin: $pluginId")
     }
- 
+
     suspend fun unloadPlugin(pluginId: String) = withContext(pluginDispatcher) {
         doUnloadPlugin(pluginId)
     }
- 
+
     suspend fun reloadPlugin(pluginInfo: PluginInfo): Result<LoadedPlugin> = loadPlugin(pluginInfo)
- 
+
     fun getLoadedPlugin(pluginId: String): LoadedPlugin? = loadedPlugins[pluginId]
- 
     fun getAllLoadedPlugins(): List<LoadedPlugin> = loadedPlugins.values.toList()
- 
     fun getEnabledPlugins(): List<LoadedPlugin> = loadedPlugins.values.filter { it.info.isEnabled }
- 
-    /**
-     * 调用插件工具。
-     */
+
     suspend fun callTool(pluginId: String, toolName: String, params: JsonElement): Result<JsonElement> {
         return withContext(pluginDispatcher) {
             try {
                 val plugin = loadedPlugins[pluginId]
                     ?: return@withContext Result.failure(IllegalStateException("Plugin not loaded: $pluginId"))
- 
+
                 if (!plugin.hasTool(toolName)) {
                     return@withContext Result.failure(IllegalArgumentException("Tool not found: $toolName"))
                 }
- 
-                val result = plugin.sandbox.callFunction(toolName, params)
-                Result.success(result)
+
+                Result.success(plugin.sandbox.callFunction(toolName, params))
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to call tool=$toolName in plugin=$pluginId", e)
                 Result.failure(e)
             }
         }
     }
- 
+
     /**
      * 触发插件事件。
-     *
-     * 兼容两种监听方式：
-     * 1. 旧版 manifest.hooks：message_sent/message_received/daily_cron 等；
-     * 2. 新版统一入口 exports.onEvent(event)，无需为每个事件单独声明 handler。
-     *
-     * onEvent 收到的事件格式：
-     * { type, legacyType, timestamp, pluginId, data }
+     * 旧 manifest.hooks 继续生效；新版插件可只导出 onEvent(event) 统一监听。
      */
     suspend fun callEvent(event: String, params: JsonElement) {
         withContext(pluginDispatcher) {
@@ -221,7 +182,6 @@ class PluginLoader(
                     )
                 }
 
-                // 如果旧版 hook 已经显式把 onEvent 作为 handler，则不重复调用。
                 if (matchingHooks.none { it.handler == "onEvent" }) {
                     val canonicalType = canonicalEventName(event)
                     val envelope = buildJsonObject {
@@ -238,45 +198,38 @@ class PluginLoader(
     }
 
     /**
-     * 每次上游模型请求前调用插件的 providePrompt(ctx)。
-     *
-     * 为避免任意插件静默修改系统提示词，动态提示词需要 manifest.permissions
-     * 显式包含 prompt_inject。providePrompt 可返回：
-     * - 字符串；
-     * - { "text": "...", "priority": 10 }。
+     * 每次上游模型请求前重新调用 providePrompt(ctx)。
+     * 需要 manifest.permissions 包含 prompt_inject。
      */
     suspend fun getDynamicPromptInjections(): List<PluginPromptInjection> = withContext(pluginDispatcher) {
-        loadedPlugins.values
-            .asSequence()
-            .filter { it.info.isEnabled }
-            .filter { PERMISSION_PROMPT_INJECT in it.info.manifest.permissions }
-            .filter { it.sandbox.hasFunction("providePrompt") }
-            .mapNotNull { plugin ->
-                val promptContext = buildJsonObject {
-                    put("pluginId", plugin.id)
-                    put("pluginName", plugin.name)
-                    put("timestamp", System.currentTimeMillis())
-                }
+        val injections = mutableListOf<PluginPromptInjection>()
 
-                val result = withTimeoutOrNull(HOOK_TIMEOUT_MS) {
-                    plugin.sandbox.callFunction("providePrompt", promptContext)
-                }
+        for (plugin in loadedPlugins.values.toList()) {
+            if (!plugin.info.isEnabled) continue
+            if (PERMISSION_PROMPT_INJECT !in plugin.info.manifest.permissions) continue
+            if (!plugin.sandbox.hasFunction("providePrompt")) continue
 
-                if (result == null) {
-                    Log.w(TAG, "Dynamic prompt timed out: plugin=${plugin.id}")
-                    return@mapNotNull null
-                }
-
-                parsePromptInjection(plugin.id, result)
+            val promptContext = buildJsonObject {
+                put("pluginId", plugin.id)
+                put("pluginName", plugin.name)
+                put("timestamp", System.currentTimeMillis())
             }
-            .sortedByDescending { it.priority }
-            .toList()
+
+            val result = withTimeoutOrNull(HOOK_TIMEOUT_MS) {
+                plugin.sandbox.callFunction("providePrompt", promptContext)
+            }
+
+            if (result == null) {
+                Log.w(TAG, "Dynamic prompt timed out: plugin=${plugin.id}")
+                continue
+            }
+
+            parsePromptInjection(plugin.id, result)?.let(injections::add)
+        }
+
+        injections.sortedByDescending { it.priority }
     }
 
-    /**
-     * 读取所有 daily_cron hook 及各自 schedule。
-     * schedule 为空时沿用旧行为：每天 03:00。
-     */
     fun getScheduledHooks(): List<PluginScheduledHook> {
         return loadedPlugins.values
             .filter { it.info.isEnabled }
@@ -292,10 +245,7 @@ class PluginLoader(
                     }
             }
     }
- 
-    /**
-     * 旧接口保留给现有 DailySummaryService 使用。
-     */
+
     fun getPluginsWithDailyCron(): List<Pair<LoadedPlugin, String>> {
         return loadedPlugins.values.filter { it.info.isEnabled }.flatMap { plugin ->
             plugin.info.manifest.hooks
@@ -317,11 +267,7 @@ class PluginLoader(
                 plugin.sandbox.callFunction(functionName, params)
             }
             if (completed == null) {
-                Log.w(
-                    TAG,
-                    "Plugin callback timed out after ${HOOK_TIMEOUT_MS}ms: " +
-                        "plugin=${plugin.id}, function='$functionName', $logLabel"
-                )
+                Log.w(TAG, "Plugin callback timed out: plugin=${plugin.id}, function='$functionName', $logLabel")
             } else {
                 Log.d(TAG, "Plugin callback completed: plugin=${plugin.id}, function=$functionName, $logLabel")
             }
@@ -353,7 +299,7 @@ class PluginLoader(
     private fun buildLifecycleContext(plugin: LoadedPlugin, eventType: String): JsonObject {
         return buildJsonObject {
             put("type", eventType)
-            put("timestamp", System.currentTimeMillis())
+            put("timestamp", System.currentTimeTimeMillis())
             put("pluginId", plugin.id)
             put("pluginName", plugin.name)
             put("version", plugin.info.manifest.version)
@@ -392,12 +338,12 @@ class PluginLoader(
             else -> null
         }
     }
- 
+
     private fun resolveModelConfig(pluginInfo: PluginInfo): Map<String, JsonElement> {
         val config = pluginInfo.config.toMutableMap()
         val store = settingsStore ?: return config
         val settings = store.settingsFlow.value
- 
+
         pluginInfo.manifest.config.forEach { field ->
             if (field.type == "model") {
                 val modelUuidStr = (config[field.name] as? JsonPrimitive)?.contentOrNull
@@ -406,7 +352,7 @@ class PluginLoader(
                     val modelUuid = Uuid.parse(modelUuidStr)
                     val model = settings.findModelById(modelUuid) ?: return@forEach
                     val provider = model.findProvider(settings.providers) ?: return@forEach
- 
+
                     val baseUrl = when (provider) {
                         is ProviderSetting.OpenAI -> provider.baseUrl
                         is ProviderSetting.Google -> provider.baseUrl
@@ -417,7 +363,7 @@ class PluginLoader(
                         is ProviderSetting.Google -> provider.apiKey
                         is ProviderSetting.Claude -> provider.apiKey
                     }
- 
+
                     config[field.name] = JsonPrimitive(model.modelId)
                     config["${field.name}_base_url"] = JsonPrimitive(baseUrl)
                     config["${field.name}_api_key"] = JsonPrimitive(apiKey)
@@ -429,7 +375,7 @@ class PluginLoader(
         }
         return config
     }
- 
+
     suspend fun unloadAll() = withContext(pluginDispatcher) {
         loadedPlugins.keys.toList().forEach { doUnloadPlugin(it) }
     }
