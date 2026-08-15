@@ -11,6 +11,7 @@ import android.util.Log
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -22,6 +23,7 @@ import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.datastore.findProvider
 import me.rerere.rikkahub.data.service.MemoryBankService
+import me.rerere.rikkahub.data.service.ProactiveMessageService
 import me.rerere.rikkahub.plugin.data.PluginDataStore
 import me.rerere.rikkahub.plugin.model.PluginInfo
 import okhttp3.OkHttpClient
@@ -42,7 +44,7 @@ data class PluginScheduledHook(
 
 /**
  * 插件加载器。
- * 在原有 tool/hook 能力之上补充最小生命周期、统一事件入口和动态提示词能力。
+ * 在原有 tool/hook 能力之上补充生命周期、统一事件、动态提示词、定时任务和宿主动作。
  */
 class PluginLoader(
     private val context: Context,
@@ -54,7 +56,12 @@ class PluginLoader(
         private const val TAG = "PluginLoader"
         private const val HOOK_TIMEOUT_MS = 16_500L
         private const val DEFAULT_DAILY_CRON = "0 3 * * *"
+        private const val MIN_AI_WAKE_INTERVAL_MS = 30_000L
+        private const val MAX_HOST_PROMPT_LENGTH = 8_000
+
         const val PERMISSION_PROMPT_INJECT = "prompt_inject"
+        const val PERMISSION_AI_CHAT = "ai_chat"
+        const val PERMISSION_AI_TOOLS = "ai_tools"
     }
 
     private val pluginDispatcher = Executors.newSingleThreadExecutor { r ->
@@ -62,6 +69,7 @@ class PluginLoader(
     }.asCoroutineDispatcher()
 
     private val loadedPlugins = mutableMapOf<String, LoadedPlugin>()
+    private val lastAiWakeAtByPlugin = mutableMapOf<String, Long>()
 
     suspend fun loadPlugin(pluginInfo: PluginInfo): Result<LoadedPlugin> = withContext(pluginDispatcher) {
         try {
@@ -131,6 +139,7 @@ class PluginLoader(
         dispatchGenericEvent(plugin, "plugin.unloaded", unloadContext)
 
         loadedPlugins.remove(pluginId)
+        lastAiWakeAtByPlugin.remove(pluginId)
         plugin.sandbox.destroy()
         Log.d(TAG, "Unloaded plugin: $pluginId")
     }
@@ -198,6 +207,43 @@ class PluginLoader(
     }
 
     /**
+     * 只触发一个已经声明的定时 hook。
+     * 通用 Cron 调度器使用该入口，避免某个插件到点时把全部 daily_cron 插件一起唤醒。
+     */
+    suspend fun callScheduledHook(pluginId: String, handler: String, params: JsonElement) {
+        withContext(pluginDispatcher) {
+            val plugin = loadedPlugins[pluginId] ?: return@withContext
+            if (!plugin.info.isEnabled) return@withContext
+
+            val declared = plugin.info.manifest.hooks.any {
+                it.event == "daily_cron" && it.handler == handler
+            }
+            if (!declared) {
+                Log.w(TAG, "Ignoring undeclared scheduled hook: plugin=$pluginId, handler=$handler")
+                return@withContext
+            }
+
+            invokeOptionalFunction(
+                plugin = plugin,
+                functionName = handler,
+                params = params,
+                logLabel = "scheduled daily_cron"
+            )
+
+            if (handler != "onEvent" && plugin.sandbox.hasFunction("onEvent")) {
+                val envelope = buildJsonObject {
+                    put("type", "scheduler.daily_cron")
+                    put("legacyType", "daily_cron")
+                    put("timestamp", System.currentTimeMillis())
+                    put("pluginId", plugin.id)
+                    put("data", params)
+                }
+                dispatchGenericEvent(plugin, "scheduler.daily_cron", envelope)
+            }
+        }
+    }
+
+    /**
      * 每次上游模型请求前重新调用 providePrompt(ctx)。
      * 需要 manifest.permissions 包含 prompt_inject。
      */
@@ -254,25 +300,36 @@ class PluginLoader(
         }
     }
 
+    /**
+     * 执行可选插件回调，并解释其返回的宿主动作。
+     *
+     * 支持：
+     * { "hostAction": "ai.wake", "prompt": "...", "assistantId": "...", "allowTools": false }
+     * 也支持返回上述对象的数组。ai.wake 需要 ai_chat 权限；allowTools=true 还需要 ai_tools 权限。
+     */
     private suspend fun invokeOptionalFunction(
         plugin: LoadedPlugin,
         functionName: String,
         params: JsonElement,
         logLabel: String = functionName,
-    ) {
-        if (!plugin.sandbox.hasFunction(functionName)) return
+    ): JsonElement? {
+        if (!plugin.sandbox.hasFunction(functionName)) return null
 
-        try {
+        return try {
             val completed = withTimeoutOrNull(HOOK_TIMEOUT_MS) {
                 plugin.sandbox.callFunction(functionName, params)
             }
             if (completed == null) {
                 Log.w(TAG, "Plugin callback timed out: plugin=${plugin.id}, function='$functionName', $logLabel")
+                null
             } else {
                 Log.d(TAG, "Plugin callback completed: plugin=${plugin.id}, function=$functionName, $logLabel")
+                handleHostActionResult(plugin, completed)
+                completed
             }
         } catch (e: Exception) {
             Log.e(TAG, "Plugin callback failed: plugin=${plugin.id}, function=$functionName, $logLabel", e)
+            null
         }
     }
 
@@ -294,6 +351,77 @@ class PluginLoader(
             }
         }
         invokeOptionalFunction(plugin, "onEvent", envelope, "type='$eventType'")
+    }
+
+    /**
+     * Host Action Bridge：事件函数通过返回结构化对象请求宿主执行 App 能力。
+     * 这样无需把 Android 对象直接暴露进 QuickJS，同时所有敏感动作都经过 manifest 权限检查。
+     */
+    private fun handleHostActionResult(plugin: LoadedPlugin, result: JsonElement) {
+        when (result) {
+            is JsonObject -> handleHostAction(plugin, result)
+            is JsonArray -> result.forEach { item ->
+                if (item is JsonObject) handleHostAction(plugin, item)
+            }
+            else -> Unit
+        }
+    }
+
+    private fun handleHostAction(plugin: LoadedPlugin, action: JsonObject) {
+        val actionName = (action["hostAction"] as? JsonPrimitive)?.contentOrNull ?: return
+
+        when (actionName) {
+            "ai.wake" -> {
+                if (PERMISSION_AI_CHAT !in plugin.info.manifest.permissions) {
+                    Log.w(TAG, "Blocked ai.wake without ai_chat permission: plugin=${plugin.id}")
+                    return
+                }
+
+                val now = System.currentTimeMillis()
+                val lastWake = lastAiWakeAtByPlugin[plugin.id] ?: 0L
+                if (now - lastWake < MIN_AI_WAKE_INTERVAL_MS) {
+                    Log.w(TAG, "Rate-limited ai.wake: plugin=${plugin.id}")
+                    return
+                }
+
+                val prompt = (action["prompt"] as? JsonPrimitive)
+                    ?.contentOrNull
+                    ?.trim()
+                    .orEmpty()
+                    .take(MAX_HOST_PROMPT_LENGTH)
+                if (prompt.isBlank()) {
+                    Log.w(TAG, "Ignored ai.wake with empty prompt: plugin=${plugin.id}")
+                    return
+                }
+
+                val assistantId = (action["assistantId"] as? JsonPrimitive)
+                    ?.contentOrNull
+                    ?.trim()
+                    .orEmpty()
+                val requestedTools = (action["allowTools"] as? JsonPrimitive)
+                    ?.contentOrNull
+                    ?.toBooleanStrictOrNull()
+                    ?: false
+                val allowTools = requestedTools && PERMISSION_AI_TOOLS in plugin.info.manifest.permissions
+
+                val launchResult = ProactiveMessageService.triggerFromWorkflow(
+                    context = context,
+                    assistantId = assistantId,
+                    workflowName = "插件唤醒：${plugin.name}",
+                    prompt = prompt,
+                    actionOutput = null,
+                    allowAllToolsAndPlugins = allowTools,
+                )
+
+                launchResult.onSuccess {
+                    lastAiWakeAtByPlugin[plugin.id] = now
+                    Log.i(TAG, "Plugin AI wake started: plugin=${plugin.id}, allowTools=$allowTools")
+                }.onFailure { error ->
+                    Log.e(TAG, "Plugin AI wake failed: plugin=${plugin.id}", error)
+                }
+            }
+            else -> Log.w(TAG, "Unknown plugin host action '$actionName' from ${plugin.id}")
+        }
     }
 
     private fun buildLifecycleContext(plugin: LoadedPlugin, eventType: String): JsonObject {
