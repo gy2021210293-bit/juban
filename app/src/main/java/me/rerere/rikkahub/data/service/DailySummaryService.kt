@@ -12,6 +12,7 @@ import android.app.Service
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
@@ -23,15 +24,18 @@ import kotlinx.serialization.json.JsonPrimitive
 import me.rerere.rikkahub.CHAT_COMPLETED_NOTIFICATION_CHANNEL_ID
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.plugin.loader.PluginLoader
+import me.rerere.rikkahub.plugin.loader.PluginScheduledHook
+import me.rerere.rikkahub.service.CronExpressionParser
 import org.koin.core.context.GlobalContext
+import java.time.ZonedDateTime
+import kotlin.math.abs
 
 /**
- * 插件定时任务调度服务
- * 使用 AlarmManager 定时触发插件的 daily_cron 钩子
- * 遵循 ProactiveMessageService / SupabaseSyncService 的调度模式
+ * 插件定时任务调度服务。
  *
- * 这使得 supabase_memory 等插件的 daily_cron 钩子能够被定时执行，
- * 从而实现每日日记自动生成等功能。
+ * 继续沿用原 DailySummaryService 名称和 Android 组件，避免破坏旧配置；
+ * 实际调度已升级为按每个插件 hook.schedule 计算下一次触发时间。
+ * 宿主只维护一个 AlarmManager 闹钟，每次指向所有插件计划中的最近一次任务。
  */
 class DailySummaryService {
 
@@ -43,54 +47,115 @@ class DailySummaryService {
         private const val PREFS_NAME = "daily_cron_prefs"
         private const val KEY_NEXT_TRIGGER_TIME = "next_trigger_time"
         private const val KEY_ENABLED = "enabled"
-        private const val KEY_HOUR = "hour"
-        private const val KEY_MINUTE = "minute"
 
-        /** 默认触发时间：每天凌晨 3:00 */
-        private const val DEFAULT_HOUR = 3
-        private const val DEFAULT_MINUTE = 0
+        const val EXTRA_PLUGIN_IDS = "plugin_ids"
+        const val EXTRA_HANDLERS = "handlers"
+        const val EXTRA_SCHEDULED_AT = "scheduled_at"
+
+        private data class Candidate(
+            val hook: PluginScheduledHook,
+            val triggerAtMillis: Long,
+        )
 
         /**
-         * 计算距离下次目标时间的毫秒数
+         * 从当前已加载插件重新计算整个调度表。
          */
-        private fun calculateDelayToNextTarget(hour: Int = DEFAULT_HOUR, minute: Int = DEFAULT_MINUTE): Long {
-            val now = java.util.Calendar.getInstance()
-            val target = java.util.Calendar.getInstance().apply {
-                set(java.util.Calendar.HOUR_OF_DAY, hour)
-                set(java.util.Calendar.MINUTE, minute)
-                set(java.util.Calendar.SECOND, 0)
-                set(java.util.Calendar.MILLISECOND, 0)
+        fun rescheduleIfEnabled(context: Context) {
+            CoroutineScope(Dispatchers.IO).launch {
+                rescheduleNow(context)
             }
-
-            // 如果今天的目标时间已过，设置为明天
-            if (target.before(now)) {
-                target.add(java.util.Calendar.DAY_OF_YEAR, 1)
-            }
-
-            return target.timeInMillis - now.timeInMillis
         }
 
         /**
-         * 调度下一次 daily_cron 闹钟
-         * @param hour 目标小时 (0-23)
-         * @param minute 目标分钟 (0-59)
+         * 立即重新计算下一次插件任务。供 TriggerService 在执行完成后调用。
          */
-        fun scheduleNext(context: Context, hour: Int = DEFAULT_HOUR, minute: Int = DEFAULT_MINUTE) {
-            val delayMs = calculateDelayToNextTarget(hour, minute)
-            val triggerTime = System.currentTimeMillis() + delayMs
+        suspend fun rescheduleNow(context: Context) {
+            try {
+                val pluginLoader = GlobalContext.get().getOrNull<PluginLoader>()
+                if (pluginLoader == null) {
+                    Log.w(TAG, "PluginLoader not available, skipping plugin cron scheduling")
+                    cancel(context)
+                    return
+                }
 
-            // 保存调度配置
+                val hooks = pluginLoader.getScheduledHooks()
+                if (hooks.isEmpty()) {
+                    cancel(context)
+                    Log.i(TAG, "No scheduled plugin hooks, cron alarm cancelled")
+                    return
+                }
+
+                val nextBatch = computeNextBatch(hooks)
+                if (nextBatch == null) {
+                    cancel(context)
+                    Log.w(TAG, "No valid future plugin cron execution could be calculated")
+                    return
+                }
+
+                scheduleBatch(
+                    context = context,
+                    triggerTime = nextBatch.first,
+                    hooks = nextBatch.second,
+                )
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to reschedule plugin cron", e)
+            }
+        }
+
+        private fun computeNextBatch(
+            hooks: List<PluginScheduledHook>,
+            basis: ZonedDateTime = ZonedDateTime.now(),
+        ): Pair<Long, List<PluginScheduledHook>>? {
+            val candidates = hooks.mapNotNull { hook ->
+                val cron = CronExpressionParser.parse(hook.schedule).getOrElse { error ->
+                    Log.w(
+                        TAG,
+                        "Invalid plugin cron '${hook.schedule}' for ${hook.pluginId}.${hook.handler}: ${error.message}"
+                    )
+                    return@mapNotNull null
+                }
+                val next = CronExpressionParser.nextExecution(cron, basis)
+                if (next == null) {
+                    Log.w(TAG, "Plugin cron has no future execution: ${hook.pluginId}.${hook.handler}")
+                    null
+                } else {
+                    Candidate(
+                        hook = hook,
+                        triggerAtMillis = next.toInstant().toEpochMilli(),
+                    )
+                }
+            }
+
+            if (candidates.isEmpty()) return null
+
+            val earliest = candidates.minOf { it.triggerAtMillis }
+            // 5-field cron 的精度为分钟；这里留 1 秒容差，把同一时刻的任务合并到一个闹钟。
+            val dueHooks = candidates
+                .filter { abs(it.triggerAtMillis - earliest) <= 1_000L }
+                .map { it.hook }
+
+            return earliest to dueHooks
+        }
+
+        private fun scheduleBatch(
+            context: Context,
+            triggerTime: Long,
+            hooks: List<PluginScheduledHook>,
+        ) {
             context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                 .edit()
                 .putLong(KEY_NEXT_TRIGGER_TIME, triggerTime)
                 .putBoolean(KEY_ENABLED, true)
-                .putInt(KEY_HOUR, hour)
-                .putInt(KEY_MINUTE, minute)
                 .apply()
 
-            val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+            val pluginIds = ArrayList(hooks.map { it.pluginId })
+            val handlers = ArrayList(hooks.map { it.handler })
+
             val intent = Intent(context, DailySummaryReceiver::class.java).apply {
                 action = ACTION_DAILY_CRON
+                putStringArrayListExtra(EXTRA_PLUGIN_IDS, pluginIds)
+                putStringArrayListExtra(EXTRA_HANDLERS, handlers)
+                putExtra(EXTRA_SCHEDULED_AT, triggerTime)
             }
             val pendingIntent = PendingIntent.getBroadcast(
                 context,
@@ -99,38 +164,43 @@ class DailySummaryService {
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
 
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-                if (alarmManager.canScheduleExactAlarms()) {
+            val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+            when {
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && alarmManager.canScheduleExactAlarms() -> {
                     alarmManager.setExactAndAllowWhileIdle(
                         AlarmManager.RTC_WAKEUP,
                         triggerTime,
-                        pendingIntent
+                        pendingIntent,
                     )
-                } else {
+                }
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
                     alarmManager.setAndAllowWhileIdle(
                         AlarmManager.RTC_WAKEUP,
                         triggerTime,
-                        pendingIntent
+                        pendingIntent,
                     )
-                    Log.w(TAG, "Exact alarm permission not granted, using inexact alarm")
+                    Log.w(TAG, "Exact alarm permission not granted, using inexact plugin cron alarm")
                 }
-            } else if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
-                alarmManager.setExactAndAllowWhileIdle(
-                    AlarmManager.RTC_WAKEUP,
-                    triggerTime,
-                    pendingIntent
-                )
-            } else {
-                alarmManager.setExact(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent)
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.M -> {
+                    alarmManager.setExactAndAllowWhileIdle(
+                        AlarmManager.RTC_WAKEUP,
+                        triggerTime,
+                        pendingIntent,
+                    )
+                }
+                else -> {
+                    alarmManager.setExact(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent)
+                }
             }
 
             val sdf = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault())
-            Log.d(TAG, "Scheduled daily_cron at ${sdf.format(java.util.Date(triggerTime))} (delay: ${delayMs / 60000} min)")
+            Log.i(
+                TAG,
+                "Scheduled ${hooks.size} plugin cron hook(s) at ${sdf.format(java.util.Date(triggerTime))}: " +
+                    hooks.joinToString { "${it.pluginId}.${it.handler} [${it.schedule}]" }
+            )
         }
 
-        /**
-         * 取消调度
-         */
         fun cancel(context: Context) {
             context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                 .edit()
@@ -150,60 +220,24 @@ class DailySummaryService {
             )
             pendingIntent?.let {
                 alarmManager.cancel(it)
-                Log.d(TAG, "Cancelled daily_cron alarm")
+                it.cancel()
+                Log.d(TAG, "Cancelled plugin cron alarm")
             }
         }
 
-        /**
-         * 获取下次触发时间
-         */
         fun getNextTriggerTime(context: Context): Long? {
-            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            val triggerTime = prefs.getLong(KEY_NEXT_TRIGGER_TIME, 0L)
-            return if (triggerTime > 0) triggerTime else null
+            val triggerTime = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .getLong(KEY_NEXT_TRIGGER_TIME, 0L)
+            return triggerTime.takeIf { it > 0L }
         }
 
-        /**
-         * 是否已启用
-         */
         fun isEnabled(context: Context): Boolean {
             return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                 .getBoolean(KEY_ENABLED, false)
         }
 
         /**
-         * 检查是否有插件声明了 daily_cron 钩子，如果有则调度
-         * 在 App 启动和 BOOT_COMPLETED 时调用
-         */
-        fun rescheduleIfEnabled(context: Context) {
-            CoroutineScope(Dispatchers.IO).launch {
-                try {
-                    val pluginLoader = GlobalContext.get().getOrNull<PluginLoader>()
-                    if (pluginLoader == null) {
-                        Log.w(TAG, "PluginLoader not available, skipping daily_cron scheduling")
-                        return@launch
-                    }
-
-                    val pluginsWithCron = pluginLoader.getPluginsWithDailyCron()
-                    if (pluginsWithCron.isNotEmpty()) {
-                        // 读取保存的调度时间，或使用默认值
-                        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-                        val hour = prefs.getInt(KEY_HOUR, DEFAULT_HOUR)
-                        val minute = prefs.getInt(KEY_MINUTE, DEFAULT_MINUTE)
-                        scheduleNext(context, hour, minute)
-                        Log.i(TAG, "Rescheduled daily_cron alarm (${pluginsWithCron.size} plugin(s) with daily_cron hook)")
-                    } else {
-                        cancel(context)
-                        Log.i(TAG, "No plugins with daily_cron hook, skipping scheduling")
-                    }
-                } catch (e: Exception) {
-                    Log.e(TAG, "Failed to reschedule daily_cron", e)
-                }
-            }
-        }
-
-        /**
-         * 立即触发一次 daily_cron（调试/手动触发用）
+         * 手动触发：不指定目标 hook 时，TriggerService 会执行全部已声明定时 hook。
          */
         fun triggerNow(context: Context) {
             val serviceIntent = Intent(context, DailySummaryTriggerService::class.java)
@@ -212,20 +246,29 @@ class DailySummaryService {
     }
 }
 
-/**
- * daily_cron 闹钟接收器
- * 收到闹钟后启动 Foreground Service 执行插件的 daily_cron 钩子
- */
 class DailySummaryReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        Log.d(DailySummaryService.TAG, "DailySummaryReceiver triggered, action=${intent.action}")
+        Log.d(DailySummaryService.TAG, "Plugin cron receiver triggered, action=${intent.action}")
         when (intent.action) {
             DailySummaryService.ACTION_DAILY_CRON -> {
-                val serviceIntent = Intent(context, DailySummaryTriggerService::class.java)
+                val serviceIntent = Intent(context, DailySummaryTriggerService::class.java).apply {
+                    putStringArrayListExtra(
+                        DailySummaryService.EXTRA_PLUGIN_IDS,
+                        intent.getStringArrayListExtra(DailySummaryService.EXTRA_PLUGIN_IDS),
+                    )
+                    putStringArrayListExtra(
+                        DailySummaryService.EXTRA_HANDLERS,
+                        intent.getStringArrayListExtra(DailySummaryService.EXTRA_HANDLERS),
+                    )
+                    putExtra(
+                        DailySummaryService.EXTRA_SCHEDULED_AT,
+                        intent.getLongExtra(DailySummaryService.EXTRA_SCHEDULED_AT, 0L),
+                    )
+                }
                 context.startForegroundService(serviceIntent)
             }
             Intent.ACTION_BOOT_COMPLETED -> {
-                Log.d(DailySummaryService.TAG, "Boot completed, rescheduling daily_cron")
+                Log.d(DailySummaryService.TAG, "Boot completed, rebuilding plugin cron schedule")
                 DailySummaryService.rescheduleIfEnabled(context)
             }
         }
@@ -233,9 +276,8 @@ class DailySummaryReceiver : BroadcastReceiver() {
 }
 
 /**
- * daily_cron 执行 Foreground Service
- * 调用 PluginLoader.callEvent("daily_cron", ...) 触发所有插件的 daily_cron 钩子
- * 执行完成后自动调度下一次闹钟
+ * 插件定时任务执行服务。
+ * Alarm 中携带本次真正到期的 pluginId/handler，只执行这些任务；完成后重新计算下一次计划。
  */
 class DailySummaryTriggerService : Service() {
 
@@ -245,53 +287,78 @@ class DailySummaryTriggerService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        Log.d(TAG, "DailySummaryTriggerService started")
+        Log.d(TAG, "Plugin cron trigger service started")
 
         val notification = NotificationCompat.Builder(this, CHAT_COMPLETED_NOTIFICATION_CHANNEL_ID)
-            .setContentTitle("正在执行定时任务...")
+            .setContentTitle("正在执行插件定时任务...")
             .setSmallIcon(R.drawable.small_icon)
             .setPriority(NotificationCompat.PRIORITY_MIN)
             .build()
         startForeground(NOTIFICATION_ID, notification)
 
+        val requestedPluginIds = intent
+            ?.getStringArrayListExtra(DailySummaryService.EXTRA_PLUGIN_IDS)
+            .orEmpty()
+        val requestedHandlers = intent
+            ?.getStringArrayListExtra(DailySummaryService.EXTRA_HANDLERS)
+            .orEmpty()
+        val scheduledAt = intent?.getLongExtra(DailySummaryService.EXTRA_SCHEDULED_AT, 0L) ?: 0L
+
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 val pluginLoader = GlobalContext.get().getOrNull<PluginLoader>()
                 if (pluginLoader == null) {
-                    Log.w(TAG, "PluginLoader not available, skipping daily_cron")
+                    Log.w(TAG, "PluginLoader not available, skipping plugin cron")
                     return@launch
                 }
 
-                val pluginsWithCron = pluginLoader.getPluginsWithDailyCron()
-                if (pluginsWithCron.isEmpty()) {
-                    Log.i(TAG, "No plugins with daily_cron hook, skipping")
-                    DailySummaryService.cancel(this@DailySummaryTriggerService)
+                val allHooks = pluginLoader.getScheduledHooks()
+                val targetHooks = if (
+                    requestedPluginIds.isNotEmpty() &&
+                    requestedPluginIds.size == requestedHandlers.size
+                ) {
+                    requestedPluginIds.zip(requestedHandlers).mapNotNull { (pluginId, handler) ->
+                        allHooks.firstOrNull {
+                            it.pluginId == pluginId && it.handler == handler
+                        }
+                    }
+                } else {
+                    // 手动 triggerNow 或旧 PendingIntent：兼容执行全部定时 hook。
+                    allHooks
+                }
+
+                if (targetHooks.isEmpty()) {
+                    Log.i(TAG, "No matching plugin cron hooks to execute")
                     return@launch
                 }
 
-                Log.i(TAG, "Dispatching daily_cron event to ${pluginsWithCron.size} plugin(s)...")
-                
-                // 构建事件参数，包含当前时间信息
                 val now = java.time.LocalDateTime.now()
                 val eventData = JsonObject(
                     mapOf(
                         "timestamp" to JsonPrimitive(now.toString()),
                         "date" to JsonPrimitive(now.toLocalDate().toString()),
                         "hour" to JsonPrimitive(now.hour),
-                        "minute" to JsonPrimitive(now.minute)
+                        "minute" to JsonPrimitive(now.minute),
+                        "scheduledAt" to JsonPrimitive(scheduledAt),
                     )
                 )
-                
-                pluginLoader.callEvent("daily_cron", eventData)
-                Log.i(TAG, "daily_cron event dispatch completed")
 
-                // 执行完成后调度下一次
-                DailySummaryService.scheduleNext(this@DailySummaryTriggerService)
+                Log.i(TAG, "Dispatching ${targetHooks.size} scheduled plugin hook(s)")
+                targetHooks.forEach { hook ->
+                    pluginLoader.callScheduledHook(
+                        pluginId = hook.pluginId,
+                        handler = hook.handler,
+                        params = eventData,
+                    )
+                }
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to dispatch daily_cron", e)
-                // 即使失败也调度下一次，避免中断
-                DailySummaryService.scheduleNext(this@DailySummaryTriggerService)
+                Log.e(TAG, "Failed to dispatch plugin cron", e)
             } finally {
+                try {
+                    DailySummaryService.rescheduleNow(this@DailySummaryTriggerService)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to rebuild plugin cron schedule", e)
+                }
                 stopSelf()
             }
         }
