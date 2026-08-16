@@ -69,6 +69,21 @@ jobs:
               -dname 'CN=Android Debug,O=Android,C=US'
           fi
 
+      - name: Give phone-test APK a standalone package id
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('app/build.gradle.kts')
+          s = p.read_text(encoding='utf-8-sig')
+          old = 'debug {\n            applicationIdSuffix = ".debug"'
+          new = 'debug {\n            applicationIdSuffix = ".pluginruntime"'
+          if old not in s:
+              raise SystemExit('Debug applicationIdSuffix block not found')
+          p.write_text(s.replace(old, new, 1), encoding='utf-8')
+          PY
+          grep -n 'applicationIdSuffix' app/build.gradle.kts
+
       - name: Build Debug APK
         shell: bash
         run: |
@@ -111,12 +126,12 @@ jobs:
           OrangeChat 插件运行时手机测试
 
           1. 安装 OrangeChat-plugin-runtime-test-debug.apk。
-             Debug 包 applicationId 带 .debug，可与正式版并存。
-          2. 在 Debug App 中先配置一个可正常聊天的 AI 模型/助手。
+             该测试包使用独立 applicationId：me.rerere.orangechat.pluginruntime，应用显示名保持不变，可与原 App 并存。
+          2. 在测试 App 中先配置一个可正常聊天的 AI 模型/助手。
           3. 导入 runtime-wake-test.zip，并确认插件已启用、允许 ai_chat 权限。
           4. 保持插件启用。测试插件按 */5 * * * * 运行，即每 5 分钟一个计划点。
           5. 成功时，AI 会在正常聊天记录里主动发出：插件自主唤醒测试成功。
-          6. 若手机限制后台闹钟，请给 Debug App 允许“闹钟和提醒/精确闹钟”，并关闭电池优化后再测。
+          6. 若手机限制后台闹钟，请给测试 App 允许“闹钟和提醒/精确闹钟”，并关闭电池优化后再测。
           EOF
 
           ls -lh dist
