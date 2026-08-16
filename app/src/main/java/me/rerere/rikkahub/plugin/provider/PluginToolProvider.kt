@@ -1,4 +1,4 @@
-﻿/*
+/*
  * 橘瓣 OrangeChat
  * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
  * 本项目基于 GNU AGPL v3 开源，详见根目录 LICENSE 文件
@@ -140,8 +140,10 @@ class PluginToolProvider(
      * 2. 旧版 manifest.promptTemplate + inject_as_prompt；
      * 3. 新版 exports.providePrompt(ctx) 动态上下文。
      *
-     * 动态上下文会在每次模型请求前重新计算，所以插件可以把实时状态、角色状态、
-     * 经营/养成进度等内容直接带入上游 system prompt，而不是只能依赖工具被动查询。
+     * 能力总览和旧版 promptTemplate 属于稳定提示，继续进入前部 system prompt。
+     * providePrompt(ctx) 会在每次模型请求前重新计算，并以 <plugin-context> 标记；
+     * GenerationHandler 会把这类动态上下文移到当前用户消息之前，避免频繁变化的插件状态
+     * 破坏前部长前缀缓存，同时保持当前用户消息为生成前最后一条对话消息。
      */
     suspend fun getPluginPromptInjections(): List<String> {
         pluginManager.awaitInitialization()
