@@ -1,4 +1,4 @@
-﻿/*
+/*
  * 橘瓣 OrangeChat
  * 衍生自 RikkaHub (https://github.com/rikkahub/rikkahub)，原作者 RE
  * 本项目基于 GNU AGPL v3 开源，详见根目录 LICENSE 文件
@@ -57,11 +57,15 @@ class PluginLoader(
         private const val HOOK_TIMEOUT_MS = 16_500L
         private const val DEFAULT_DAILY_CRON = "0 3 * * *"
         private const val MIN_AI_WAKE_INTERVAL_MS = 30_000L
+        private const val MIN_NOTIFICATION_INTERVAL_MS = 2_000L
         private const val MAX_HOST_PROMPT_LENGTH = 8_000
+        private const val MAX_NOTIFICATION_TITLE_LENGTH = 120
+        private const val MAX_NOTIFICATION_TEXT_LENGTH = 2_000
 
         const val PERMISSION_PROMPT_INJECT = "prompt_inject"
         const val PERMISSION_AI_CHAT = "ai_chat"
         const val PERMISSION_AI_TOOLS = "ai_tools"
+        const val PERMISSION_NOTIFICATION = "notification"
     }
 
     private val pluginDispatcher = Executors.newSingleThreadExecutor { r ->
@@ -70,6 +74,7 @@ class PluginLoader(
 
     private val loadedPlugins = mutableMapOf<String, LoadedPlugin>()
     private val lastAiWakeAtByPlugin = mutableMapOf<String, Long>()
+    private val lastNotificationAtByPlugin = mutableMapOf<String, Long>()
 
     suspend fun loadPlugin(pluginInfo: PluginInfo): Result<LoadedPlugin> = withContext(pluginDispatcher) {
         try {
@@ -140,6 +145,7 @@ class PluginLoader(
 
         loadedPlugins.remove(pluginId)
         lastAiWakeAtByPlugin.remove(pluginId)
+        lastNotificationAtByPlugin.remove(pluginId)
         plugin.sandbox.destroy()
         Log.d(TAG, "Unloaded plugin: $pluginId")
     }
@@ -305,7 +311,8 @@ class PluginLoader(
      *
      * 支持：
      * { "hostAction": "ai.wake", "prompt": "...", "assistantId": "...", "allowTools": false }
-     * 也支持返回上述对象的数组。ai.wake 需要 ai_chat 权限；allowTools=true 还需要 ai_tools 权限。
+     * { "hostAction": "notification.show", "title": "...", "text": "..." }
+     * 也支持返回上述对象的数组。
      */
     private suspend fun invokeOptionalFunction(
         plugin: LoadedPlugin,
@@ -420,6 +427,48 @@ class PluginLoader(
                     Log.e(TAG, "Plugin AI wake failed: plugin=${plugin.id}", error)
                 }
             }
+
+            "notification.show" -> {
+                if (PERMISSION_NOTIFICATION !in plugin.info.manifest.permissions) {
+                    Log.w(TAG, "Blocked notification.show without notification permission: plugin=${plugin.id}")
+                    return
+                }
+
+                val now = System.currentTimeMillis()
+                val lastNotification = lastNotificationAtByPlugin[plugin.id] ?: 0L
+                if (now - lastNotification < MIN_NOTIFICATION_INTERVAL_MS) {
+                    Log.w(TAG, "Rate-limited notification.show: plugin=${plugin.id}")
+                    return
+                }
+
+                val title = (action["title"] as? JsonPrimitive)
+                    ?.contentOrNull
+                    ?.trim()
+                    ?.take(MAX_NOTIFICATION_TITLE_LENGTH)
+                val text = (action["text"] as? JsonPrimitive)
+                    ?.contentOrNull
+                    ?.trim()
+                    .orEmpty()
+                    .take(MAX_NOTIFICATION_TEXT_LENGTH)
+                if (text.isBlank()) {
+                    Log.w(TAG, "Ignored notification.show with empty text: plugin=${plugin.id}")
+                    return
+                }
+
+                val shown = PluginNotificationHost.show(
+                    context = context,
+                    pluginName = plugin.name,
+                    title = title,
+                    text = text,
+                )
+                if (shown) {
+                    lastNotificationAtByPlugin[plugin.id] = now
+                    Log.i(TAG, "Plugin notification shown: plugin=${plugin.id}")
+                } else {
+                    Log.w(TAG, "Plugin notification not shown (system notification permission unavailable): plugin=${plugin.id}")
+                }
+            }
+
             else -> Log.w(TAG, "Unknown plugin host action '$actionName' from ${plugin.id}")
         }
     }

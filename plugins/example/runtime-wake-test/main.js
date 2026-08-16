@@ -1,8 +1,13 @@
 // OrangeChat plugin runtime smoke test.
-// Every 5 minutes the host calls onWakeTest. The handler asks the host to wake AI.
+// On load it verifies notification.show; every 5 minutes it verifies ai.wake.
 
 exports.onLoad = function(ctx) {
     console.log('[runtime-wake-test] loaded: ' + JSON.stringify(ctx));
+    return {
+        hostAction: 'notification.show',
+        title: '插件通知测试',
+        text: 'notification.show 已触发'
+    };
 };
 
 exports.onEvent = function(event) {
