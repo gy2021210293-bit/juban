@@ -405,7 +405,7 @@ class ChatCompletionsAPI(
                 "messages",
                 buildMessages(
                     messages = messages,
-                    includeHistoryReasoning = providerSetting.includeHistoryReasoning,
+                    includeHistoryReasoning = true,
                     supportInputModalities = params.model.inputModalities,
                 )
             )
@@ -607,7 +607,7 @@ class ChatCompletionsAPI(
         // 纯文本模型 (如 GLM-5.2) 不接受 image_url, 收到会报 "Model only support text input"。
         // OcrTransformer 只覆盖 file: 图片, http/base64 图片会漏网; 这里在序列化层兜底,
         // 模型不支持 IMAGE 时直接跳过 Image part, 不再发给 API。
-        val supportsImage = model.inputModalities.contains(Modality.IMAGE)
+        val supportsImage = Modality.IMAGE in supportInputModalities
 
         filteredMessages.forEach { message ->
             if (message.role == MessageRole.ASSISTANT) {
