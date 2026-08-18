@@ -9,6 +9,8 @@ package me.rerere.rikkahub.data.service
 import kotlinx.serialization.json.Json
 import me.rerere.rikkahub.data.datastore.SystemToolsSetting
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -19,9 +21,48 @@ class DynamicContextProviderTest {
             .decodeFromString<SystemToolsSetting>("{}")
 
         assertFalse(decoded.dynamicContextEnabled)
+        assertFalse(decoded.dynamicContextHealth)
         assertTrue(decoded.dynamicContextApps)
         assertTrue(decoded.dynamicContextNotifications)
         assertTrue(decoded.dynamicContextCalendar)
+    }
+
+    @Test
+    fun mediaFormatter_includesSourceAndEscapesMetadata() {
+        val section = formatDynamicMedia(
+            DynamicMediaEntry(
+                appName = "Music <App>",
+                title = "Song & One",
+                artist = "Artist",
+                album = "Album",
+            )
+        )
+
+        assertTrue(section.contains("[Music &lt;App&gt;]"))
+        assertTrue(section.contains("Song &amp; One · Artist"))
+        assertTrue(section.contains("专辑：Album"))
+    }
+
+    @Test
+    fun healthFormatter_includesLatestHeartRateTimeAndTodaySteps() {
+        val section = formatDynamicHealth(
+            heartRate = 72,
+            heartRateTimestampMs = 0L,
+            stepsToday = 3456,
+        )
+
+        assertTrue(section?.contains("最新心率：72 次/分") == true)
+        assertTrue(section?.contains("今日步数：3456 步") == true)
+        assertNull(formatDynamicHealth(null, null, null))
+        assertEquals("- 手环健康：今日步数：0 步", formatDynamicHealth(null, null, 0))
+    }
+
+    @Test
+    fun dynamicLocationPermission_acceptsApproximateOrPreciseLocation() {
+        assertTrue(hasDynamicLocationPermission(fineLocationGranted = true, coarseLocationGranted = true))
+        assertTrue(hasDynamicLocationPermission(fineLocationGranted = true, coarseLocationGranted = false))
+        assertTrue(hasDynamicLocationPermission(fineLocationGranted = false, coarseLocationGranted = true))
+        assertFalse(hasDynamicLocationPermission(fineLocationGranted = false, coarseLocationGranted = false))
     }
 
     @Test

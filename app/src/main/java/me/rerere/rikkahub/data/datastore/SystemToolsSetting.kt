@@ -19,6 +19,7 @@ data class SystemToolsSetting(
     val dynamicContextApps: Boolean = true,
     val dynamicContextDevice: Boolean = true,
     val dynamicContextAudio: Boolean = true,
+    val dynamicContextHealth: Boolean = false,
     val dynamicContextNotifications: Boolean = true,
     val dynamicContextNetwork: Boolean = true,
     val dynamicContextLocation: Boolean = true,

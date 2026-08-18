@@ -44,6 +44,7 @@ import me.rerere.rikkahub.data.db.migrations.Migration_24_25
 import me.rerere.rikkahub.data.db.migrations.Migration_25_26
 import me.rerere.rikkahub.data.ai.mcp.McpManager
 import me.rerere.rikkahub.data.service.MemoryBankService
+import me.rerere.rikkahub.data.service.StickerRepository
 import me.rerere.rikkahub.data.sync.webdav.WebDavSync
 import me.rerere.search.SearchService
 import me.rerere.rikkahub.data.sync.S3Sync
@@ -61,6 +62,8 @@ val dataSourceModule = module {
     single {
         SettingsStore(context = get(), scope = get())
     }
+
+    single { StickerRepository(settingsStore = get()) }
 
     single {
         val context: Context = get()

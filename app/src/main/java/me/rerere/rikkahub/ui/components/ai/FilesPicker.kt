@@ -9,17 +9,20 @@ package me.rerere.rikkahub.ui.components.ai
 import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentWidth
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -87,6 +90,7 @@ internal fun FilesPicker(
     onDismiss: () -> Unit,
     onTakePic: () -> Unit,
     onPickImage: () -> Unit,
+    onPickSticker: () -> Unit,
     onPickVideo: () -> Unit,
     onPickAudio: () -> Unit,
     onPickFile: () -> Unit,
@@ -103,22 +107,29 @@ internal fun FilesPicker(
             .fillMaxWidth()
             .padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        FlowRow(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(16.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            TakePicButton(onLaunchCamera = onTakePic)
+            TakePicButton(
+                modifier = Modifier.width(72.dp),
+                compact = true,
+                onLaunchCamera = onTakePic,
+            )
 
-            ImagePickButton(onClick = onPickImage)
+            ImagePickButton(modifier = Modifier.width(72.dp), compact = true, onClick = onPickImage)
+
+            StickerPickButton(modifier = Modifier.width(72.dp), compact = true, onClick = onPickSticker)
+
+            FilePickButton(modifier = Modifier.width(72.dp), compact = true, onClick = onPickFile)
 
             if (provider != null && provider is ProviderSetting.Google) {
                 VideoPickButton(onClick = onPickVideo)
 
                 AudioPickButton(onClick = onPickAudio)
             }
-
-            FilePickButton(onClick = onPickFile)
         }
 
         HorizontalDivider(
@@ -262,24 +273,32 @@ private fun InjectionQuickConfigSheet(
 }
 
 @Composable
-private fun ImagePickButton(onClick: () -> Unit = {}) {
+private fun ImagePickButton(
+    modifier: Modifier = Modifier,
+    compact: Boolean = false,
+    onClick: () -> Unit = {},
+) {
     BigIconTextButton(icon = {
         Icon(HugeIcons.Image02, null)
     }, text = {
         Text(stringResource(R.string.photo))
-    }) {
+    }, modifier = modifier, compact = compact) {
         onClick()
     }
 }
 
 @Composable
-fun TakePicButton(onLaunchCamera: () -> Unit = {}) {
+fun TakePicButton(
+    modifier: Modifier = Modifier,
+    compact: Boolean = false,
+    onLaunchCamera: () -> Unit = {},
+) {
     val cameraPermission = rememberPermissionState(PermissionCamera)
 
     PermissionManager(
         permissionState = cameraPermission
     ) {
-        BigIconTextButton(icon = {
+        BigIconTextButton(modifier = modifier, compact = compact, icon = {
             Icon(HugeIcons.Camera01, null)
         }, text = {
             Text(stringResource(R.string.take_picture))
@@ -316,12 +335,16 @@ fun AudioPickButton(onClick: () -> Unit = {}) {
 }
 
 @Composable
-fun FilePickButton(onClick: () -> Unit = {}) {
+fun FilePickButton(
+    modifier: Modifier = Modifier,
+    compact: Boolean = false,
+    onClick: () -> Unit = {},
+) {
     BigIconTextButton(icon = {
         Icon(HugeIcons.Files02, null)
     }, text = {
         Text(stringResource(R.string.upload_file))
-    }) {
+    }, modifier = modifier, compact = compact) {
         onClick()
     }
 }
@@ -329,6 +352,7 @@ fun FilePickButton(onClick: () -> Unit = {}) {
 @Composable
 private fun BigIconTextButton(
     modifier: Modifier = Modifier,
+    compact: Boolean = false,
     icon: @Composable () -> Unit,
     text: @Composable () -> Unit,
     onClick: () -> Unit,
@@ -343,14 +367,15 @@ private fun BigIconTextButton(
             .semantics {
                 role = Role.Button
             }
-            .wrapContentWidth(),
+            .then(if (compact) Modifier.fillMaxWidth() else Modifier.wrapContentWidth()),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Surface(
             tonalElevation = 2.dp, shape = RoundedCornerShape(8.dp)
         ) {
             Box(
-                modifier = Modifier.padding(horizontal = 32.dp, vertical = 16.dp)
+                modifier = if (compact) Modifier.size(48.dp) else Modifier.padding(horizontal = 32.dp, vertical = 16.dp),
+                contentAlignment = Alignment.Center,
             ) {
                 icon()
             }
@@ -372,5 +397,20 @@ private fun BigIconTextButtonPreview() {
         }, text = {
             Text(stringResource(R.string.photo))
         }) {}
+    }
+}
+
+@Composable
+private fun StickerPickButton(
+    modifier: Modifier = Modifier,
+    compact: Boolean = false,
+    onClick: () -> Unit = {},
+) {
+    BigIconTextButton(icon = {
+        Icon(HugeIcons.Image02, null)
+    }, text = {
+        Text("表情包")
+    }, modifier = modifier, compact = compact) {
+        onClick()
     }
 }

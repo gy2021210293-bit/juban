@@ -8,6 +8,7 @@ package me.rerere.rikkahub.ui.pages.miniapp
 
 import android.annotation.SuppressLint
 import android.content.ActivityNotFoundException
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.util.Log
@@ -47,6 +48,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat.startActivity
 import kotlinx.serialization.json.Json
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.ArrowLeft01
 import me.rerere.hugeicons.stroke.Cancel01
@@ -59,6 +62,73 @@ private const val TAG = "MiniAppPage"
 
 private val json = Json { ignoreUnknownKeys = true }
 
+internal data class OpenedMiniApp(
+    val url: String,
+    val title: String,
+)
+
+private data class CachedMiniApp(
+    val webView: WebView,
+    var title: String,
+)
+
+internal data class AcquiredMiniApp(
+    val webView: WebView,
+    val wasCached: Boolean,
+)
+
+internal object MiniAppSessionCache {
+    private const val MAX_CACHED_APPS = 2
+
+    private val cachedApps = LinkedHashMap<String, CachedMiniApp>(MAX_CACHED_APPS, 0.75f, true)
+    private val _openedApps = MutableStateFlow<List<OpenedMiniApp>>(emptyList())
+    val openedApps: StateFlow<List<OpenedMiniApp>> = _openedApps
+
+    fun acquire(
+        context: Context,
+        url: String,
+        title: String?,
+        create: (Context) -> WebView,
+    ): AcquiredMiniApp {
+        cachedApps[url]?.let { cached ->
+            cached.title = title ?: cached.title
+            cached.webView.onResume()
+            publishOpenedApps()
+            return AcquiredMiniApp(cached.webView, wasCached = true)
+        }
+
+        val webView = create(context)
+        cachedApps[url] = CachedMiniApp(webView, title.orEmpty())
+        trimCache()
+        publishOpenedApps()
+        return AcquiredMiniApp(webView, wasCached = false)
+    }
+
+    fun pause(url: String) {
+        cachedApps[url]?.webView?.onPause()
+    }
+
+    private fun trimCache() {
+        while (cachedApps.size > MAX_CACHED_APPS) {
+            val oldest = cachedApps.entries.iterator().next()
+            oldest.value.webView.apply {
+                stopLoading()
+                loadUrl("about:blank")
+                clearHistory()
+                destroy()
+            }
+            cachedApps.remove(oldest.key)
+        }
+    }
+
+    private fun publishOpenedApps() {
+        _openedApps.value = cachedApps.entries
+            .toList()
+            .asReversed()
+            .map { (url, cached) -> OpenedMiniApp(url, cached.title) }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MiniAppPage(
@@ -70,10 +140,26 @@ fun MiniAppPage(
     val isDarkMode = LocalDarkMode.current
     val colorScheme = MaterialTheme.colorScheme
 
-    val webViewRef = remember { mutableStateOf<WebView?>(null) }
+    val cachedMiniApp = remember(url) {
+        MiniAppSessionCache.acquire(context, url, title) { webViewContext ->
+            WebView(webViewContext).apply {
+                settings.apply {
+                    @SuppressLint("SetJavaScriptEnabled")
+                    javaScriptEnabled = true
+                    domStorageEnabled = true
+                    databaseEnabled = true
+                    allowContentAccess = true
+                    mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+                    cacheMode = WebSettings.LOAD_DEFAULT
+                }
+                loadUrl(url)
+            }
+        }
+    }
+    val webViewRef = remember(cachedMiniApp.webView) { mutableStateOf<WebView?>(cachedMiniApp.webView) }
     val webView by webViewRef
-    var pageTitle by remember { mutableStateOf(title ?: "") }
-    var isLoading by remember { mutableStateOf(true) }
+    var pageTitle by remember(cachedMiniApp.webView) { mutableStateOf(cachedMiniApp.webView.title ?: title.orEmpty()) }
+    var isLoading by remember(cachedMiniApp.webView) { mutableStateOf(!cachedMiniApp.wasCached) }
     var mainButtonVisible by remember { mutableStateOf(false) }
     var mainButtonText by remember { mutableStateOf("CONTINUE") }
     var mainButtonEnabled by remember { mutableStateOf(true) }
@@ -171,24 +257,18 @@ fun MiniAppPage(
             ) {
                 AndroidView(
                     modifier = Modifier.fillMaxSize(),
-                    factory = { ctx ->
-                        WebView(ctx).apply {
-                            settings.apply {
-                                @SuppressLint("SetJavaScriptEnabled")
-                                javaScriptEnabled = true
-                                domStorageEnabled = true
-                                databaseEnabled = true
-                                allowContentAccess = true
-                                mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
-                                cacheMode = WebSettings.LOAD_DEFAULT
-                            }
+                    factory = {
+                        cachedMiniApp.webView.apply {
                             webViewClient = miniAppWebViewClient
                             webChromeClient = WebChromeClient()
-                            loadUrl(url)
+                            onResume()
                             webViewRef.value = this
                         }
                     },
                     update = {
+                        it.webViewClient = miniAppWebViewClient
+                        it.webChromeClient = WebChromeClient()
+                        it.onResume()
                         webViewRef.value = it
                     }
                 )
@@ -300,9 +380,9 @@ fun MiniAppPage(
         )
     }
 
-    DisposableEffect(Unit) {
+    DisposableEffect(url) {
         onDispose {
-            webView?.destroy()
+            MiniAppSessionCache.pause(url)
         }
     }
 }

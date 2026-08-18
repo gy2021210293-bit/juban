@@ -585,6 +585,7 @@ class GenerationHandler(
             // Generated-image cards are UI-only. Replace them before every input transformer so
             // OCR and similar transformers cannot upload their local files to another model.
             .replaceGeneratedImagesWithDescriptions()
+            .replaceUserStickersWithNames()
             .transforms(
             transformers = transformers,
             context = context,
@@ -601,6 +602,7 @@ class GenerationHandler(
             ),
             pluginContext = dynamicPluginPromptInjections.joinToString("\n\n"),
         ).replaceGeneratedImagesWithDescriptions()
+            .replaceUserStickersWithNames()
  
         var messages: List<UIMessage> = messages
         val params = TextGenerationParams(

@@ -435,7 +435,16 @@ class ChatCompletionsAPI(
 
             if (params.model.abilities.contains(ModelAbility.REASONING)) {
                 val level = params.reasoningLevel
-                when (host) {
+                if (params.model.modelId.contains("deepseek", ignoreCase = true)) {
+                    // DeepSeek enables thinking by default. Gateways often use their own host,
+                    // so host matching alone would silently turn it back on for OFF.
+                    put("thinking", buildJsonObject {
+                        put("type", if (level.isEnabled) "enabled" else "disabled")
+                    })
+                    if (level.isEnabled && level != ReasoningLevel.AUTO) {
+                        put("reasoning_effort", level.effort)
+                    }
+                } else when (host) {
                     "openrouter.ai" -> {
                         // https://openrouter.ai/docs/use-cases/reasoning-tokens
                         put("reasoning", buildJsonObject {
@@ -518,15 +527,6 @@ class ChatCompletionsAPI(
                         })
                     }
 
-                    "api.deepseek.com" -> {
-                        put("thinking", buildJsonObject {
-                            put("type", if (!level.isEnabled) "disabled" else "enabled")
-                        })
-                        if (level.isEnabled && level != ReasoningLevel.AUTO) {
-                            put("reasoning_effort", level.effort)
-                        }
-                    }
-
                     "integrate.api.nvidia.com" -> {
                         if ("deepseek-v4" in params.model.modelId.lowercase()) {
                             if (level != ReasoningLevel.AUTO) {
@@ -538,8 +538,8 @@ class ChatCompletionsAPI(
                                 put("reasoning_effort", effort)
                             }
                         } else {
-                            if (level != ReasoningLevel.AUTO) {
-                                put("reasoning_effort", if (level.effort == "none") "low" else level.effort)
+                            if (level != ReasoningLevel.AUTO && level != ReasoningLevel.OFF) {
+                                put("reasoning_effort", level.effort)
                             }
                         }
                     }
@@ -547,8 +547,8 @@ class ChatCompletionsAPI(
                     else -> {
                         // OpenAI 官方
                         // 文档中，completions API 只支持 "low", "medium", "high"
-                        if (level != ReasoningLevel.AUTO) {
-                            put("reasoning_effort", if (level.effort == "none") "low" else level.effort)
+                        if (level != ReasoningLevel.AUTO && level != ReasoningLevel.OFF) {
+                            put("reasoning_effort", level.effort)
                         }
                     }
                 }

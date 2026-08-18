@@ -114,6 +114,7 @@ import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.model.QuickMessage
+import me.rerere.rikkahub.data.model.Sticker
 import me.rerere.rikkahub.service.VoiceCallService
 import me.rerere.rikkahub.ui.components.ui.KeepScreenOn
 import me.rerere.rikkahub.ui.components.ui.toComposeColor
@@ -157,6 +158,7 @@ fun ChatInput(
     onCancelClick: () -> Unit,
     onSendClick: () -> Unit,
     onLongSendClick: () -> Unit,
+    onSendSticker: (Sticker) -> Unit,
     onVoiceMessage: ((url: String, duration: Long, transcript: String) -> Unit)? = null,
     autoStartVoice: Boolean = false,
 ) {
@@ -182,6 +184,7 @@ fun ChatInput(
     var expand by remember { mutableStateOf(ExpandState.Collapsed) }
     var showInjectionSheet by remember { mutableStateOf(false) }
     var showCompressDialog by remember { mutableStateOf(false) }
+    var showStickerPicker by remember { mutableStateOf(false) }
     fun dismissExpand() {
         expand = ExpandState.Collapsed
         showInjectionSheet = false
@@ -756,6 +759,10 @@ fun ChatInput(
                             onDismiss = { dismissExpand() },
                             onTakePic = onLaunchCamera,
                             onPickImage = { imagePickerLauncher.launch("image/*") },
+                            onPickSticker = {
+                                dismissExpand()
+                                showStickerPicker = true
+                            },
                             onPickVideo = { videoPickerLauncher.launch("video/*") },
                             onPickAudio = { audioPickerLauncher.launch("audio/*") },
                             onPickFile = { filePickerLauncher.launch(arrayOf("*/*")) },
@@ -764,6 +771,21 @@ fun ChatInput(
                 }
             }
         }
+    }
+
+    if (showStickerPicker) {
+        StickerPicker(
+            settings = settings,
+            onSelect = { sticker ->
+                if (loading) {
+                    toaster.show("请先等待当前回复结束", type = ToastType.Normal)
+                } else {
+                    onSendSticker(sticker)
+                    showStickerPicker = false
+                }
+            },
+            onDismiss = { showStickerPicker = false },
+        )
     }
 }
 

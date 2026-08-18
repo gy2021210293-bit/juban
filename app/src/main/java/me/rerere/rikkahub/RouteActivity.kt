@@ -158,6 +158,7 @@ import me.rerere.rikkahub.ui.pages.setting.SettingSearchPage
 import me.rerere.rikkahub.ui.pages.setting.SettingSpeechPage
 import me.rerere.rikkahub.ui.pages.setting.SettingWebPage
 import me.rerere.rikkahub.ui.pages.setting.SettingSystemToolsPage
+import me.rerere.rikkahub.ui.pages.setting.SettingStickersPage
 import me.rerere.rikkahub.ui.pages.setting.SecuritySettingPage
 import me.rerere.rikkahub.ui.pages.setting.SettingProactiveMessagePage
 import me.rerere.rikkahub.ui.pages.setting.SettingWeixinBotPage
@@ -687,6 +688,10 @@ entry<Screen.Extensions> {
                                 SettingSystemToolsPage()
                             }
 
+                            entry<Screen.SettingStickers> {
+                                SettingStickersPage()
+                            }
+
                             entry<Screen.SettingSecurity> {
                                 SecuritySettingPage()
                             }
@@ -1065,6 +1070,9 @@ sealed interface Screen : NavKey {
 
     @Serializable
     data object SettingSystemTools : Screen
+
+    @Serializable
+    data object SettingStickers : Screen
 
     @Serializable
     data object SettingSecurity : Screen

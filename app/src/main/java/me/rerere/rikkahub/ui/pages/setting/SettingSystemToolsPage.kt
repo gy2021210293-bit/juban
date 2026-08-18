@@ -75,6 +75,7 @@ import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.datastore.SystemToolsSetting
 import me.rerere.rikkahub.data.service.DynamicContextMonitor
 import me.rerere.rikkahub.data.service.DynamicContextProvider
+import me.rerere.rikkahub.data.service.hasDynamicLocationPermission
 import me.rerere.rikkahub.data.gadgetbridge.GadgetbridgeReader
 import me.rerere.rikkahub.ui.components.nav.BackButton
 import me.rerere.rikkahub.ui.components.ui.CardGroup
@@ -127,6 +128,14 @@ fun SettingSystemToolsPage(vm: SettingVM = koinViewModel()) {
     val locationPermissionState = rememberPermissionState(permissions = locationPermissions)
     val dynamicLocationPermissionState = rememberPermissionState(
         permissions = setOf(PermissionAccessFineLocation, PermissionAccessCoarseLocation)
+    )
+    val dynamicLocationPermissionGranted = hasDynamicLocationPermission(
+        fineLocationGranted = dynamicLocationPermissionState.permissionStates[
+            PermissionAccessFineLocation.permission
+        ] == me.rerere.rikkahub.ui.components.ui.permission.PermissionStatus.Granted,
+        coarseLocationGranted = dynamicLocationPermissionState.permissionStates[
+            PermissionAccessCoarseLocation.permission
+        ] == me.rerere.rikkahub.ui.components.ui.permission.PermissionStatus.Granted,
     )
 
     val notificationPermissionState = rememberPermissionState(
@@ -251,12 +260,24 @@ fun SettingSystemToolsPage(vm: SettingVM = koinViewModel()) {
                         )
                         item(
                             headlineContent = { Text("耳机与媒体") },
-                            supportingContent = { Text("音频输出设备和当前媒体播放状态") },
+                            supportingContent = { Text("音频输出设备、播放状态、媒体标题和来源应用") },
                             trailingContent = {
                                 Switch(
                                     checked = systemToolsSetting.dynamicContextAudio,
                                     onCheckedChange = {
                                         updateSystemToolsSetting(systemToolsSetting.copy(dynamicContextAudio = it))
+                                    }
+                                )
+                            }
+                        )
+                        item(
+                            headlineContent = { Text("手环健康数据") },
+                            supportingContent = { Text("注入 Gadgetbridge 中的最新心率、采样时间和今日步数；默认关闭") },
+                            trailingContent = {
+                                Switch(
+                                    checked = systemToolsSetting.dynamicContextHealth,
+                                    onCheckedChange = {
+                                        updateSystemToolsSetting(systemToolsSetting.copy(dynamicContextHealth = it))
                                     }
                                 )
                             }
@@ -294,7 +315,7 @@ fun SettingSystemToolsPage(vm: SettingVM = koinViewModel()) {
                                 Switch(
                                     checked = systemToolsSetting.dynamicContextLocation,
                                     onCheckedChange = { enabled ->
-                                        if (enabled && !dynamicLocationPermissionState.allPermissionsGranted) {
+                                        if (enabled && !dynamicLocationPermissionGranted) {
                                             dynamicLocationPermissionState.requestPermissions()
                                         }
                                         updateSystemToolsSetting(
@@ -345,12 +366,12 @@ fun SettingSystemToolsPage(vm: SettingVM = koinViewModel()) {
                                 }
                             )
                         }
-                        if (systemToolsSetting.dynamicContextNotifications &&
+                        if ((systemToolsSetting.dynamicContextNotifications || systemToolsSetting.dynamicContextAudio) &&
                             !me.rerere.rikkahub.data.ai.tools.local.NotificationListenerHandle.isBound()
                         ) {
                             item(
                                 headlineContent = { Text("⚠ 通知访问权限缺失") },
-                                supportingContent = { Text("未授权时不会注入活动通知") },
+                                supportingContent = { Text("未授权时不会注入活动通知或正在播放的媒体详情") },
                                 trailingContent = {
                                     FilledTonalButton(onClick = {
                                         runCatching {
@@ -361,7 +382,7 @@ fun SettingSystemToolsPage(vm: SettingVM = koinViewModel()) {
                             )
                         }
                         if (systemToolsSetting.dynamicContextLocation &&
-                            !dynamicLocationPermissionState.allPermissionsGranted
+                            !dynamicLocationPermissionGranted
                         ) {
                             item(
                                 headlineContent = { Text("⚠ 定位权限缺失") },

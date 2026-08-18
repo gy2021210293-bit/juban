@@ -10,6 +10,7 @@ import android.Manifest
 import android.app.KeyguardManager
 import android.bluetooth.BluetoothDevice
 import android.content.BroadcastReceiver
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -17,6 +18,9 @@ import android.content.pm.PackageManager
 import android.database.Cursor
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
+import android.media.MediaMetadata
+import android.media.session.MediaSessionManager
+import android.media.session.PlaybackState
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.BatteryManager
@@ -31,8 +35,10 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.SystemToolsSetting
+import me.rerere.rikkahub.data.gadgetbridge.GadgetbridgeReader
 import me.rerere.rikkahub.workflow.trigger.AppForegroundDispatcher
 import java.text.SimpleDateFormat
+import java.time.LocalDate
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
@@ -156,6 +162,52 @@ data class DynamicNotificationEntry(
     val timestampMs: Long,
 )
 
+internal data class DynamicMediaEntry(
+    val appName: String,
+    val title: String,
+    val artist: String,
+    val album: String,
+)
+
+internal fun formatDynamicMedia(entry: DynamicMediaEntry): String = buildString {
+    append("\n- 正在播放：[")
+    append(DynamicContextFormatter.escape(entry.appName))
+    append("]")
+    entry.title.takeIf { it.isNotBlank() }?.let {
+        append(" ")
+        append(DynamicContextFormatter.escape(it))
+    }
+    entry.artist.takeIf { it.isNotBlank() }?.let {
+        append(" · ")
+        append(DynamicContextFormatter.escape(it))
+    }
+    entry.album.takeIf { it.isNotBlank() }?.let {
+        append("（专辑：")
+        append(DynamicContextFormatter.escape(it))
+        append("）")
+    }
+}
+
+internal fun formatDynamicHealth(
+    heartRate: Int?,
+    heartRateTimestampMs: Long?,
+    stepsToday: Int?,
+): String? {
+    val details = buildList {
+        heartRate?.takeIf { it > 0 }?.let {
+            val measuredAt = heartRateTimestampMs?.let(DynamicContextFormatter::time)
+            add("最新心率：$it 次/分${measuredAt?.let { time -> "（$time）" }.orEmpty()}")
+        }
+        stepsToday?.takeIf { it >= 0 }?.let { add("今日步数：$it 步") }
+    }
+    return details.takeIf { it.isNotEmpty() }?.joinToString(separator = "；", prefix = "- 手环健康：")
+}
+
+internal fun hasDynamicLocationPermission(
+    fineLocationGranted: Boolean,
+    coarseLocationGranted: Boolean,
+): Boolean = fineLocationGranted || coarseLocationGranted
+
 internal fun dynamicEnvironmentMetadata(dynamicContext: String): JsonObject = buildJsonObject {
     put("dynamic_environment", true)
     Regex("""<dynamic_context generated_at="([^"]+)">""")
@@ -185,6 +237,7 @@ class DynamicContextProvider(
             if (options.dynamicContextApps) buildAppSection(monitor.snapshot(), now)?.let(prioritySections::add)
             if (options.dynamicContextDevice) buildDeviceSection(monitor.snapshot(), now)?.let(prioritySections::add)
             if (options.dynamicContextAudio) buildAudioSection(monitor.snapshot(), now)?.let(prioritySections::add)
+            if (options.dynamicContextHealth) buildHealthSection(options)?.let(prioritySections::add)
             if (options.dynamicContextNetwork) buildNetworkSection(monitor.snapshot(), now)?.let(prioritySections::add)
             if (options.dynamicContextLocation) buildLocationSection(options)?.let(secondarySections::add)
             if (options.dynamicContextCalendar) buildCalendarSection(now)?.let(secondarySections::add)
@@ -254,10 +307,45 @@ class DynamicContextProvider(
         }
         return buildString {
             append("- 音频状态：$output；${if (audio.isMusicActive) "媒体正在播放" else "当前无媒体播放"}")
+            currentPlayingMedia()?.let { append(formatDynamicMedia(it)) }
             state.headphones?.takeIf { now - it.changedAtMs <= LAST_CHANGE_MAX_AGE_MS }?.let {
                 append("\n- 最近音频设备变化：${it.value}（${DynamicContextFormatter.time(it.changedAtMs)}）")
             }
         }
+    }
+
+    private fun currentPlayingMedia(): DynamicMediaEntry? {
+        val manager = context.getSystemService(MediaSessionManager::class.java) ?: return null
+        val listener = ComponentName(context, RikkaNotificationListenerService::class.java)
+        val controller = runCatching { manager.getActiveSessions(listener) }
+            .getOrNull()
+            ?.firstOrNull { it.playbackState?.state == PlaybackState.STATE_PLAYING }
+            ?: return null
+        val metadata = controller.metadata
+        fun metadataText(key: String): String = metadata?.getString(key).orEmpty().trim().take(MAX_MEDIA_TEXT_CHARS)
+        val title = metadataText(MediaMetadata.METADATA_KEY_TITLE)
+            .ifBlank { metadataText(MediaMetadata.METADATA_KEY_DISPLAY_TITLE) }
+        return DynamicMediaEntry(
+            appName = appName(controller.packageName).take(MAX_MEDIA_TEXT_CHARS),
+            title = title,
+            artist = metadataText(MediaMetadata.METADATA_KEY_ARTIST)
+                .ifBlank { metadataText(MediaMetadata.METADATA_KEY_ALBUM_ARTIST) },
+            album = metadataText(MediaMetadata.METADATA_KEY_ALBUM),
+        )
+    }
+
+    private fun buildHealthSection(options: SystemToolsSetting): String? {
+        val path = options.gadgetbridgeDbPath
+        if (!GadgetbridgeReader.dbFileExists(path)) return null
+        val todaySteps = GadgetbridgeReader.readDailySummaries(1, path)
+            .firstOrNull { it.date == LocalDate.now() }
+            ?.steps
+        val latestHeartRate = GadgetbridgeReader.readLatestActivitySample(path)
+        return formatDynamicHealth(
+            heartRate = latestHeartRate?.heartRate,
+            heartRateTimestampMs = latestHeartRate?.timestamp,
+            stepsToday = todaySteps,
+        )
     }
 
     private fun buildNetworkSection(state: DynamicContextMonitorState, now: Long): String? {
@@ -271,11 +359,15 @@ class DynamicContextProvider(
     }
 
     private suspend fun buildLocationSection(options: SystemToolsSetting): String? {
-        if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) !=
-            PackageManager.PERMISSION_GRANTED ||
-            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) !=
-            PackageManager.PERMISSION_GRANTED
-        ) return null
+        val fineLocationGranted = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.ACCESS_FINE_LOCATION,
+        ) == PackageManager.PERMISSION_GRANTED
+        val coarseLocationGranted = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.ACCESS_COARSE_LOCATION,
+        ) == PackageManager.PERMISSION_GRANTED
+        if (!hasDynamicLocationPermission(fineLocationGranted, coarseLocationGranted)) return null
         val fetched = DeviceLocationFetcher.fetch(context) ?: return null
         if (fetched.ageMs > LOCATION_MAX_AGE_MS) return null
         val components = if (options.amapApiKey.isNotBlank()) {
@@ -399,6 +491,7 @@ class DynamicContextProvider(
         private const val CALENDAR_WINDOW_MS = 24 * 60 * 60_000L
         private const val MAX_CALENDAR_ENTRIES = 5
         private const val MAX_NOTIFICATION_ENTRIES = 5
+        private const val MAX_MEDIA_TEXT_CHARS = 200
     }
 }
 

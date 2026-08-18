@@ -51,6 +51,17 @@
   Android device/emulator; also verify avatar double-tap, AI-triggered pat rendering, and plugin quick-entry navigation
   on-device.
 
+## Current Investigation
+
+- Dynamic environment audio context now augments `AudioManager.isMusicActive` with the actively playing media session's
+  source app, title, artist, and album when notification-listener access is available. Paused sessions are excluded.
+- Dynamic environment health context has a separate, default-off switch. It reads the existing Gadgetbridge export and
+  injects only the latest heart-rate value with its sample time and the current calendar day's step count. The shared
+  Gadgetbridge database path remains usable even when the approval-required Gadgetbridge AI tool itself is disabled.
+- The Debug APK containing dynamic media metadata and the independent health-context switch was rebuilt on 2026-08-07.
+  The arm64-v8a output passed APK Signature Scheme v2 verification; its SHA-256 is
+  `750D3BFB2520D860F762E802A2DD1126C58634631F14ADCC2A65BC59FE0C9583`.
+
 ## Pitfalls and External Resources
 
 - The machine-wide Gradle init script conflicts with repositories mode, so verification uses the ignored
@@ -166,3 +177,46 @@
   `git -c http.sslBackend=openssl fetch --unshallow --no-filter upstream`; Windows Schannel TLS fails here. GitHub
   accepted the push but warns that `_chk.zip` (82 MB) and `app/src/main/assets/runtime/python.tar.gz` (74 MB) exceed
   its recommended 50 MB threshold; consider Git LFS before those files grow further.
+- Publication policy verified from the upstream LICENSE on 2026-08-09: it is a segmented dual license. Non-commercial,
+  personal, educational, research, or no-more-than-ten-user use is under AGPL v3 with source-disclosure obligations;
+  commercial use, more than ten users, or avoiding AGPL obligations requires a commercial license from the maintainer.
+  Release derivatives from `origin`, retain the upstream license/attribution, publish corresponding source, and do not
+  imply that the derivative is the official upstream project.
+- GitHub PR #1 (`agent/plugin-runtime-foundation` → `master`) is Draft but mergeable as of 2026-08-16; it has no
+  review, CI status, or workflow run. It adds 979 lines for plugin lifecycle/events, dynamic context, cron scheduling,
+  host-side `ai.wake`, and plugin notifications, so complete an explicit pre-merge validation before making it ready.
+- Local validation on 2026-08-16 merged PR #1 into `master` as `9e45f66c`; `:app:assembleDebug` succeeded in 12m27s.
+  The refreshed arm64-v8a Debug APK passed v2 signature verification and has SHA-256
+  `6154346752F1D181D7E4FA1D52831E38F2C38FBE0797FEE5D50C8C5725F8FCF7`.
+- Device-vibration diagnosis on 2026-08-16: `DailySummaryTriggerService` starts a short-lived foreground task on the
+  high-importance, vibration-enabled `CHAT_COMPLETED_NOTIFICATION_CHANNEL_ID`. PR #1 made `daily_cron` run at each
+  plugin's own schedule, so a frequent hook can produce vibration after its transient notification has disappeared.
+  `PluginNotificationHost` also creates a separate vibration-enabled `plugin_runtime` channel for explicit plugin
+  notifications. Disable the scheduled plugin or either channel as an immediate mitigation; use a silent low-importance
+  channel for the service as the code repair.
+- The permanent service-channel repair adds `PLUGIN_CRON_NOTIFICATION_CHANNEL_ID` with low importance, vibration off,
+  and no badge, then uses it only in `DailySummaryTriggerService`. `:app:compileDebugKotlin` passed on 2026-08-16;
+  no APK packaging task was run.
+- Lock-screen privacy repair on 2026-08-16: remove `android:showWhenLocked` and `android:turnScreenOn` only from
+  exported launcher `RouteActivity`, so waking a locked device returns to the system lock screen. Keep those flags on
+  the non-exported app-lock Activities, where lock-screen interaction is intentional. `:app:processDebugManifest`
+  passed; no APK packaging task was run, so real-device confirmation awaits a later build/install.
+- A Debug APK containing the plugin-cron silent-channel and RouteActivity lock-screen repairs was built on 2026-08-16.
+  `:app:assembleDebug` succeeded; `app-arm64-v8a-debug.apk` passed v2 signature verification and has SHA-256
+  `CD836A9214CDF38A6A1FC097FF12FA58FE474361144A7374A801057EEF6C707B`.
+- User sticker sending added on 2026-08-17: App and the existing sticker plugin share the Supabase `stickers` table,
+  using only `name` and `url`. The App reads the catalog directly, stores/render its selected sticker as Markdown in
+  local chat history, and replaces only marker-tagged sticker parts with `用户发送了表情包：<name>` before input
+  transformers and provider dispatch. Thus neither URL/image nor OCR reaches the model; the plugin remains responsible
+  for catalog management and AI-initiated `list_stickers`/`send_sticker`. Targeted sticker tests and Debug APK build
+  passed locally; Supabase RLS and device UI behavior still require live validation with configured anon credentials.
+- Sticker picker responsiveness adjustment on 2026-08-17: `StickerRepository` persists the last successful catalog in
+  DataStore, keyed only by Supabase URL and containing only sticker name/URL; anon keys are never cached. On every picker
+  open, it shows that cache while requesting Supabase in parallel, overwriting the cache only after a successful refresh
+  and retaining it on failure. The chat attachment panel keeps Camera, Photo, Sticker, and File in a compact 72dp-wide
+  single row, with optional Google Video/Audio entries following in the same horizontally scrollable row.
+  `UserStickerMessageTest` and `:app:compileDebugKotlin` passed; no new APK was packaged after this adjustment at the
+  user's request.
+- Current-worktree Debug packaging on 2026-08-17: `:app:assembleDebug` succeeded with all then-present local changes.
+  The arm64-v8a APK passed v2 signature verification and has SHA-256
+  `545BE0DCB7AB5EB875B18F86A4A4ED66DBF591AE967EF9515EE6BC18784FCF5A`.

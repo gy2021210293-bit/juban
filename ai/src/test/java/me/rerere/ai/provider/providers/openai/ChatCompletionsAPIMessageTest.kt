@@ -8,6 +8,7 @@ package me.rerere.ai.provider.providers.openai
 
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
@@ -15,7 +16,11 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import me.rerere.ai.core.MessageRole
+import me.rerere.ai.core.ReasoningLevel
 import me.rerere.ai.provider.Model
+import me.rerere.ai.provider.ProviderSetting
+import me.rerere.ai.provider.TextGenerationParams
+import me.rerere.ai.provider.ModelAbility
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.ai.util.KeyRoulette
@@ -44,6 +49,56 @@ class ChatCompletionsAPIMessageTest {
             messages = messages,
             model = Model(modelId = "test-model", displayName = "test-model"),
         )
+    }
+
+    private fun invokeBuildRequest(
+        providerSetting: ProviderSetting.OpenAI,
+        params: TextGenerationParams,
+    ): JsonObject {
+        val method = ChatCompletionsAPI::class.java.getDeclaredMethod(
+            "buildChatCompletionRequest",
+            List::class.java,
+            TextGenerationParams::class.java,
+            ProviderSetting.OpenAI::class.java,
+            Boolean::class.javaPrimitiveType,
+        )
+        method.isAccessible = true
+        return method.invoke(api, listOf(UIMessage.user("hello")), params, providerSetting, false) as JsonObject
+    }
+
+    @Test
+    fun `reasoning off must not become low for generic OpenAI chat completions`() {
+        val request = invokeBuildRequest(
+            providerSetting = ProviderSetting.OpenAI(baseUrl = "https://api.openai.com/v1"),
+            params = TextGenerationParams(
+                model = Model(
+                    modelId = "gpt-5",
+                    displayName = "gpt-5",
+                    abilities = listOf(ModelAbility.REASONING),
+                ),
+                reasoningLevel = ReasoningLevel.OFF,
+            ),
+        )
+
+        assertTrue("OFF must omit reasoning_effort", "reasoning_effort" !in request)
+    }
+
+    @Test
+    fun `reasoning off must explicitly disable DeepSeek through a gateway`() {
+        val request = invokeBuildRequest(
+            providerSetting = ProviderSetting.OpenAI(baseUrl = "https://gateway.example/v1"),
+            params = TextGenerationParams(
+                model = Model(
+                    modelId = "deepseek-v4-pro",
+                    displayName = "DeepSeek V4 Pro",
+                    abilities = listOf(ModelAbility.REASONING),
+                ),
+                reasoningLevel = ReasoningLevel.OFF,
+            ),
+        )
+
+        assertEquals("disabled", request["thinking"]?.jsonObject?.get("type")?.jsonPrimitive?.content)
+        assertTrue("OFF must not send reasoning_effort", "reasoning_effort" !in request)
     }
 
     @Test

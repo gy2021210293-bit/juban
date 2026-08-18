@@ -46,6 +46,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import me.rerere.hugeicons.HugeIcons
+import me.rerere.hugeicons.stroke.Image02
 import me.rerere.hugeicons.stroke.AiMagic
 import me.rerere.hugeicons.stroke.Alert01
 import me.rerere.hugeicons.stroke.CloudServer
@@ -204,6 +205,12 @@ fun SettingPage(vm: SettingVM = koinViewModel()) {
                         leadingContent = { Icon(HugeIcons.Package, null) },
                         supportingContent = { Text("管理本地插件，导入ZIP插件包") },
                         headlineContent = { Text("插件管理") },
+                    )
+                    item(
+                        onClick = { navController.navigate(Screen.SettingStickers) },
+                        leadingContent = { Icon(HugeIcons.Image02, null) },
+                        supportingContent = { Text("配置与表情包插件共用的 Supabase 图床") },
+                        headlineContent = { Text("表情包") },
                     )
                     item(
                         onClick = { navController.navigate(Screen.SettingSecurity) },

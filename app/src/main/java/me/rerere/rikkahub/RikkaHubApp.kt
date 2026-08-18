@@ -61,6 +61,7 @@ const val MUSIC_PLAYER_NOTIFICATION_CHANNEL_ID = "music_player"
 const val DEVICE_EVENT_NOTIFICATION_CHANNEL_ID = "device_event_tracking"
 const val VOICE_CALL_NOTIFICATION_CHANNEL_ID = "voice_call"
 const val ANNOUNCEMENT_NOTIFICATION_CHANNEL_ID = "announcement"
+const val PLUGIN_CRON_NOTIFICATION_CHANNEL_ID = "plugin_cron"
 
 class RikkaHubApp : Application() {
     companion object {
@@ -356,6 +357,14 @@ class RikkaHubApp : Application() {
             .setShowBadge(false)
             .build()
         notificationManager.createNotificationChannel(voiceCallChannel)
+
+        val pluginCronChannel = NotificationChannelCompat
+            .Builder(PLUGIN_CRON_NOTIFICATION_CHANNEL_ID, NotificationManagerCompat.IMPORTANCE_LOW)
+            .setName("插件定时任务")
+            .setVibrationEnabled(false)
+            .setShowBadge(false)
+            .build()
+        notificationManager.createNotificationChannel(pluginCronChannel)
 
         val announcementChannel = NotificationChannelCompat
             .Builder(ANNOUNCEMENT_NOTIFICATION_CHANNEL_ID, NotificationManagerCompat.IMPORTANCE_HIGH)

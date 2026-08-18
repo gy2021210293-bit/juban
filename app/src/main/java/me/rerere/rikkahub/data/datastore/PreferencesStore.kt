@@ -19,6 +19,7 @@ import androidx.datastore.preferences.preferencesDataStore
 import io.pebbletemplates.pebble.PebbleEngine
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
 import kotlinx.serialization.SerialName
@@ -40,6 +41,7 @@ import me.rerere.rikkahub.data.ai.prompts.DEFAULT_TITLE_PROMPT
 import me.rerere.rikkahub.data.ai.prompts.DEFAULT_TRANSLATION_PROMPT
 import me.rerere.rikkahub.data.ai.prompts.LEARNING_MODE_PROMPT
 import me.rerere.rikkahub.data.model.Assistant
+import me.rerere.rikkahub.data.model.StickerCatalogCache
 import me.rerere.rikkahub.data.model.Avatar
 import me.rerere.rikkahub.data.model.ExternalMemory
 import me.rerere.rikkahub.data.model.InjectionPosition
@@ -162,6 +164,9 @@ class SettingsStore(
 
         // 系统工具设置
         val SYSTEM_TOOLS_SETTING = stringPreferencesKey("system_tools_setting")
+
+        // 表情包图床本地缓存（不进入设置导出）
+        val STICKER_CATALOG_CACHE = stringPreferencesKey("sticker_catalog_cache")
 
         // 主动消息设置
         val PROACTIVE_MESSAGE_SETTING = stringPreferencesKey("proactive_message_setting")
@@ -493,6 +498,15 @@ class SettingsStore(
         }
     }
 
+    suspend fun getStickerCatalogCache(): StickerCatalogCache? = dataStore.data.first()[STICKER_CATALOG_CACHE]
+        ?.let { cache -> runCatching { JsonInstant.decodeFromString<StickerCatalogCache>(cache) }.getOrNull() }
+
+    suspend fun updateStickerCatalogCache(cache: StickerCatalogCache) {
+        dataStore.edit { preferences ->
+            preferences[STICKER_CATALOG_CACHE] = JsonInstant.encodeToString(cache)
+        }
+    }
+
     suspend fun update(fn: (Settings) -> Settings) {
         update(fn(settingsFlow.value))
     }
@@ -621,6 +635,7 @@ data class Settings(
     val launchCount: Int = 0,
     val sponsorAlertDismissedAt: Int = 0,
     val systemToolsSetting: SystemToolsSetting = SystemToolsSetting(),
+    val stickerStorageSetting: StickerStorageSetting = StickerStorageSetting(),
     val proactiveMessageSetting: ProactiveMessageSetting = ProactiveMessageSetting(),
     val wechatBotSetting: WechatBotSetting = WechatBotSetting(),
     val qqBotSetting: QqBotSetting = QqBotSetting(),

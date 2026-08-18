@@ -21,7 +21,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
-import me.rerere.rikkahub.CHAT_COMPLETED_NOTIFICATION_CHANNEL_ID
+import me.rerere.rikkahub.PLUGIN_CRON_NOTIFICATION_CHANNEL_ID
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.plugin.loader.PluginLoader
 import me.rerere.rikkahub.plugin.loader.PluginScheduledHook
@@ -289,7 +289,7 @@ class DailySummaryTriggerService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.d(TAG, "Plugin cron trigger service started")
 
-        val notification = NotificationCompat.Builder(this, CHAT_COMPLETED_NOTIFICATION_CHANNEL_ID)
+        val notification = NotificationCompat.Builder(this, PLUGIN_CRON_NOTIFICATION_CHANNEL_ID)
             .setContentTitle("正在执行插件定时任务...")
             .setSmallIcon(R.drawable.small_icon)
             .setPriority(NotificationCompat.PRIORITY_MIN)
