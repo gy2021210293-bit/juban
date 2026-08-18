@@ -220,3 +220,10 @@
 - Current-worktree Debug packaging on 2026-08-17: `:app:assembleDebug` succeeded with all then-present local changes.
   The arm64-v8a APK passed v2 signature verification and has SHA-256
   `545BE0DCB7AB5EB875B18F86A4A4ED66DBF591AE967EF9515EE6BC18784FCF5A`.
+- RikkaHub 2.4.1 repair port on 2026-08-18: preserve OrangeChat-specific DeepSeek model-ID thinking handling,
+  sticker attachment UX, and notification lifecycle while cherry-picking MCP OAuth refresh/SSE retry, OpenAI and
+  Google multimodal tool results, search-preview navigation, attachment alignment, settings insets, and extension
+  sheet dismissal. The existing unbounded callbackFlow buffers already cover the upstream stream-character-loss fix;
+  do not replace OrangeChat notification architecture solely to mirror upstream. `:ai:compileDebugKotlin` and
+  `:app:compileDebugKotlin` passed; the full AI suite retains eight pre-existing failures (six Claude reflection
+  failures and two existing OpenAI reasoning-history assertions).
