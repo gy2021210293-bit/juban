@@ -53,6 +53,8 @@
 
 ## Current Investigation
 
+- Dynamic environment normal-chat gateway repair on 2026-08-18: `generated_at` must be ISO-8601 UTC, and Chat Completions same-role normalization must not merge a `metadata.dynamic_environment=true` snapshot with the current real user request. Either mistake makes the gateway preserve it as ordinary history; do not relax the gateway's validation rule.
+
 - Dynamic environment audio context now augments `AudioManager.isMusicActive` with the actively playing media session's
   source app, title, artist, and album when notification-listener access is available. Paused sessions are excluded.
 - Dynamic environment health context has a separate, default-off switch. It reads the existing Gadgetbridge export and
@@ -227,3 +229,56 @@
   do not replace OrangeChat notification architecture solely to mirror upstream. `:ai:compileDebugKotlin` and
   `:app:compileDebugKotlin` passed; the full AI suite retains eight pre-existing failures (six Claude reflection
   failures and two existing OpenAI reasoning-history assertions).
+- Prompt-cache repair on 2026-08-18: `limitContext` now uses a half-window hysteresis step and is shared by normal,
+  proactive, and voice generation, preserving complete tool chains when a boundary falls inside one. The default
+  assistant uses `{{cur_date}}` rather than per-request `{{cur_datetime}}`; the old time placeholders remain for
+  existing custom prompts. `MessageTest` and `:app:compileDebugKotlin` passed; real cache-token savings still depend
+  on the configured DeepSeek gateway/provider returning cache-usage fields.
+- Coil/TTS repair on 2026-08-18: register the shared Coil image-loader factory with non-Compose
+  `SingletonImageLoader.setSafe` in `RikkaHubApp.onCreate`, before any UI image API can initialize it; never register
+  it from `RouteActivity` composition. The `text_to_speech` tool injects MiMo-only style/audio-tag guidance into its
+  internal system prompt, including `mimo-v2.5-tts-voicedesign`; VoiceDesign forwards those tags unchanged as its
+  target assistant text, while other providers inject nothing. The upstream native highlighter is a separate 202-file
+  migration and remains intentionally unported pending dedicated review.
+- MiMo TTS default model now targets `mimo-v2.5-tts-voicedesign`; the MiMo model and voice inputs remain free-form,
+  so existing saved providers are not migrated automatically and can be changed manually in Settings.
+- MiMo VoiceDesign is a non-streaming `/chat/completions` response: the `user` message carries a timbre description,
+  the `assistant` message carries OrangeChat's target speech text, and `audio.optimize_text_preview` is persisted as
+  an optional setting. Do not treat its value as a voice ID or route it through the legacy PCM SSE path.
+- OpenAI-compatible streaming repair on 2026-08-18: a null-only `choices`, `delta`, `message`, or `tool_calls` field
+  from a gateway is treated as an empty SSE event instead of aborting generation. This is intentionally limited to
+  parsing resilience; it does not alter proactive-message tool-loop behavior.
+- OpenAI request-alignment repair on 2026-08-18: apply same-role normalization after invalid history is filtered and
+  before Chat Completions serialization. This prevents filtered history from producing consecutive `user` messages;
+  standalone `TOOL` messages are never merged, so assistant tool calls retain their exact result boundaries and IDs.
+- Proactive prompt-cache repair on 2026-08-18: retain stable trigger rules in the proactive system prompt, but move the
+  per-trigger idle-minute value into the final ephemeral user instruction after history. This allows repeated proactive
+  turns with the same assistant/history to reuse the stable system-and-history prefix; cache sharing across rotated API
+  keys still depends on the gateway's own cache partitioning.
+- Current-worktree Debug packaging on 2026-08-18 succeeded after the MiMo VoiceDesign repair. The arm64-v8a APK at
+  `app/build/outputs/apk/debug/app-arm64-v8a-debug.apk` passed v2 signature verification; SHA-256 is
+  `DCA241BB73ED6A790D096FC2A797C6BE7C9559BAE32CF4BB4AEFEABBE8573296`.
+- Device feedback on 2026-08-18: deleting and re-adding the MiMo VoiceDesign provider restored synthesis using the
+  existing `api-key` header. Treat saved pre-VoiceDesign MiMo settings as potentially stale; re-creation is the
+  current user-side migration path.
+- Drawer density adjustment on 2026-08-18: the shortcut-group heading was removed, and shared drawer navigation
+  rows use 2dp group spacing with 8dp vertical content padding so more conversation history remains visible. Keep
+  this as a drawer-only, portrait-first adjustment; do not alter the main chat layout.
+- Residual vibration diagnosis on 2026-08-18: the plugin-cron foreground service correctly uses the silent
+  `plugin_cron` channel, but `ProactiveMessageTriggerService` still starts on high-vibration `chat_completed` before
+  it can reject a disabled/duplicate/no-op trigger and stop itself. This can leave a vibration without a persistent
+  notification. Direct AI `vibrate` calls are a second notification-free path when the optional system tool is enabled.
+- Workflow dynamic-environment gateway warning diagnosis on 2026-08-18: `buildInitialProactiveMessages` inserts a
+  metadata-marked dynamic USER snapshot before the workflow USER instruction, then `mergeAdjacentSameRoleMessages`
+  combines those adjacent USER messages while retaining the snapshot metadata. The gateway correctly rejects the mixed
+  content as an invalid dynamic marker and preserves it as an ordinary workflow message. Repair must preserve a
+  standalone dynamic snapshot rather than altering the gateway's validation rule.
+- Workflow dynamic-environment repair on 2026-08-18: adjacent-role normalization now never merges a
+  `dynamic_environment=true` snapshot with its real request, and `DynamicContextFormatter` emits an ISO UTC
+  `generated_at` value for the gateway's freshness check. Targeted proactive/dynamic-context tests and
+  `:app:compileDebugKotlin` passed; live gateway logs still need a new workflow invocation to confirm absence of the
+  warning.
+- Reasoning AUTO audit correction on 2026-08-18: the reasoning provider branches in the current worktree match
+  original commit `f05a851b`; AUTO keeps provider-required enable/adaptive/include-thoughts fields while omitting
+  explicit effort/budget. The earlier claim that the gateway defaults thinking off was unsupported and is withdrawn.
+  Keep the original provider behavior unless a captured upstream payload proves a specific provider needs a change.

@@ -775,7 +775,7 @@ private fun <T> Flow<T>.throttleLatest(periodMillis: Long): Flow<T> {
 /**
  * 构建代码块提示 - 告知AI代码文件命名和ZIP打包功能
  */
-private fun buildCodeBlockPrompt(): String = buildString {
+internal fun buildCodeBlockPrompt(): String = buildString {
     appendLine("## Code Block Rules (MUST FOLLOW)")
     appendLine()
     appendLine("1. **ALWAYS name code blocks with filenames**: You MUST use the actual filename as the code block language tag instead of just the language name. This is critical for proper file saving and syntax highlighting. Examples:")

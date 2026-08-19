@@ -7,6 +7,7 @@
 package me.rerere.ai.provider.providers.openai
 
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.boolean
@@ -66,6 +67,27 @@ class ChatCompletionsAPIMessageTest {
         return method.invoke(api, listOf(UIMessage.user("hello")), params, providerSetting, false) as JsonObject
     }
 
+    private fun invokeParseStreamChoices(payload: String): List<*> {
+        val method = ChatCompletionsAPI::class.java.getDeclaredMethod("parseStreamChoices", JsonObject::class.java)
+        method.isAccessible = true
+        return method.invoke(api, Json.parseToJsonElement(payload).jsonObject) as List<*>
+    }
+
+    @Test
+    fun `stream chunks with null tool fields do not abort parsing`() {
+        val choices = invokeParseStreamChoices(
+            """{"id":"chatcmpl-1","choices":[{"delta":{"content":"done","tool_calls":null},"finish_reason":null}]}"""
+        )
+
+        assertEquals(1, choices.size)
+    }
+
+    @Test
+    fun `stream chunks with null choices or delta are ignored`() {
+        assertTrue(invokeParseStreamChoices("""{"choices":null}""").isEmpty())
+        assertTrue(invokeParseStreamChoices("""{"choices":[{"delta":null,"message":null}]}""").isEmpty())
+    }
+
     @Test
     fun `reasoning off must not become low for generic OpenAI chat completions`() {
         val request = invokeBuildRequest(
@@ -102,6 +124,24 @@ class ChatCompletionsAPIMessageTest {
     }
 
     @Test
+    fun `reasoning auto must not control DeepSeek through a gateway`() {
+        val request = invokeBuildRequest(
+            providerSetting = ProviderSetting.OpenAI(baseUrl = "https://gateway.example/v1"),
+            params = TextGenerationParams(
+                model = Model(
+                    modelId = "deepseek-v4-pro",
+                    displayName = "DeepSeek V4 Pro",
+                    abilities = listOf(ModelAbility.REASONING),
+                ),
+                reasoningLevel = ReasoningLevel.AUTO,
+            ),
+        )
+
+        assertEquals("enabled", request["thinking"]?.jsonObject?.get("type")?.jsonPrimitive?.content)
+        assertTrue("AUTO must not send reasoning effort", "reasoning_effort" !in request)
+    }
+
+    @Test
     fun `dynamic environment metadata should be serialized on user message`() {
         val message = UIMessage.user("snapshot").copy(
             metadata = buildJsonObject {
@@ -114,6 +154,43 @@ class ChatCompletionsAPIMessageTest {
 
         assertTrue(serialized["metadata"]!!.jsonObject["dynamic_environment"]!!.jsonPrimitive.boolean)
         assertEquals("07-29 17:10", serialized["metadata"]!!.jsonObject["generated_at"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `dynamic environment snapshot must stay separate from the current user message`() {
+        val snapshotText = "<dynamic_context generated_at=\"2026-08-18T10:00:00Z\">battery=51</dynamic_context>"
+        val snapshot = UIMessage.user(snapshotText)
+            .copy(
+                metadata = buildJsonObject {
+                    put("dynamic_environment", true)
+                    put("generated_at", "2026-08-18T10:00:00Z")
+                }
+            )
+
+        val serialized = invokeBuildMessages(listOf(snapshot, UIMessage.user("current question")))
+
+        assertEquals(listOf("user", "user"), serialized.map { it.jsonObject["role"]!!.jsonPrimitive.content })
+        assertEquals(snapshotText, serialized[0].jsonObject["content"]!!.jsonPrimitive.content)
+        assertEquals("current question", serialized[1].jsonObject["content"]!!.jsonPrimitive.content)
+        assertTrue(serialized[0].jsonObject["metadata"]!!.jsonObject["dynamic_environment"]!!.jsonPrimitive.boolean)
+        assertTrue("metadata must not leak onto the real user request", "metadata" !in serialized[1].jsonObject)
+    }
+
+    @Test
+    fun `filtered history cannot leave consecutive user messages before an executed tool result`() {
+        val toolCall = createExecutedTool("call_1", "search", "{\"query\":\"orange\"}", "result")
+        val serialized = invokeBuildMessages(
+            listOf(
+                UIMessage.user("history"),
+                UIMessage.user("current proactive instruction"),
+                UIMessage(role = MessageRole.ASSISTANT, parts = listOf(toolCall)),
+                UIMessage.user("continue after the tool"),
+            )
+        )
+
+        val roles = serialized.map { it.jsonObject["role"]!!.jsonPrimitive.content }
+        assertEquals(listOf("user", "assistant", "tool", "user"), roles)
+        assertEquals("call_1", serialized[2].jsonObject["tool_call_id"]!!.jsonPrimitive.content)
     }
 
     @Test

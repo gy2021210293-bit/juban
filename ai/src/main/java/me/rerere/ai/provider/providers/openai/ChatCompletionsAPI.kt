@@ -21,6 +21,7 @@ import kotlinx.serialization.json.JsonArrayBuilder
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
@@ -312,26 +313,7 @@ class ChatCompletionsAPI(
                 val id = chunkJson["id"]?.jsonPrimitive?.contentOrNull ?: ""
                 val model = chunkJson["model"]?.jsonPrimitive?.contentOrNull ?: ""
 
-                val choices = chunkJson["choices"]?.jsonArray ?: JsonArray(emptyList())
-                val choiceList = buildList {
-                    if (choices.isNotEmpty()) {
-                        val choice = choices[0].jsonObject
-                        val message =
-                            choice["delta"]?.jsonObject ?: choice["message"]?.jsonObject
-                            ?: throw Exception("delta/message is null")
-                        val finishReason =
-                            choice["finish_reason"]?.jsonPrimitive?.contentOrNull
-                                ?: "unknown"
-                        add(
-                            UIMessageChoice(
-                                index = 0,
-                                delta = parseMessage(message),
-                                message = null,
-                                finishReason = finishReason,
-                            )
-                        )
-                    }
-                }
+                val choiceList = parseStreamChoices(chunkJson)
                 val usage = parseTokenUsage(chunkJson["usage"] as? JsonObject)
 
                 val messageChunk = MessageChunk(
@@ -390,6 +372,26 @@ class ChatCompletionsAPI(
         // trySend 在缓冲满时会静默丢弃 delta, 导致回复中间缺字 (#1295), 因此缓冲必须无界。
         // 与上游 rikkahub 对齐: 在 callbackFlow 上叠加 Channel.UNLIMITED 缓冲。
     }.buffer(Channel.UNLIMITED)
+
+    /**
+     * OpenAI-compatible gateways sometimes emit null for choices, delta, or tool_calls.
+     * A null-only event carries no usable content and must not terminate the whole stream.
+     */
+    private fun parseStreamChoices(chunkJson: JsonObject): List<UIMessageChoice> {
+        val choice = (chunkJson["choices"] as? JsonArray)?.firstOrNull() as? JsonObject
+            ?: return emptyList()
+        val message = (choice["delta"] as? JsonObject) ?: (choice["message"] as? JsonObject)
+            ?: return emptyList()
+        val finishReason = choice["finish_reason"]?.jsonPrimitive?.contentOrNull ?: "unknown"
+        return listOf(
+            UIMessageChoice(
+                index = 0,
+                delta = parseMessage(message),
+                message = null,
+                finishReason = finishReason,
+            )
+        )
+    }
 
 
     private fun buildChatCompletionRequest(
@@ -603,7 +605,9 @@ class ChatCompletionsAPI(
         includeHistoryReasoning: Boolean = true,
         supportInputModalities: List<Modality> = listOf(Modality.TEXT, Modality.IMAGE),
     ) = buildJsonArray {
-        val filteredMessages = messages.filter { it.isValidToUpload() }
+        val filteredMessages = normalizeMessagesForChatCompletions(
+            messages.filter { it.isValidToUpload() }
+        )
         // 纯文本模型 (如 GLM-5.2) 不接受 image_url, 收到会报 "Model only support text input"。
         // OcrTransformer 只覆盖 file: 图片, http/base64 图片会漏网; 这里在序列化层兜底,
         // 模型不支持 IMAGE 时直接跳过 Image part, 不再发给 API。
@@ -621,6 +625,32 @@ class ChatCompletionsAPI(
             }
         }
     }
+
+    /**
+     * Filtering invalid history can make two otherwise separated user/assistant messages adjacent.
+     * Merge only those ordinary roles before serialization; TOOL messages keep their call-result boundaries.
+     */
+    private fun normalizeMessagesForChatCompletions(messages: List<UIMessage>): List<UIMessage> =
+        messages.fold(emptyList()) { accumulated, message ->
+            val previous = accumulated.lastOrNull()
+            if (
+                previous != null &&
+                previous.role == message.role &&
+                message.role != MessageRole.TOOL &&
+                !previous.isDynamicEnvironmentSnapshot() &&
+                !message.isDynamicEnvironmentSnapshot()
+            ) {
+                accumulated.dropLast(1) + previous.copy(
+                    parts = previous.parts + message.parts,
+                    metadata = previous.metadata ?: message.metadata,
+                )
+            } else {
+                accumulated + message
+            }
+        }
+
+    private fun UIMessage.isDynamicEnvironmentSnapshot(): Boolean =
+        metadata?.get("dynamic_environment")?.jsonPrimitive?.booleanOrNull == true
 
     private fun JsonArrayBuilder.addAssistantMessages(
         message: UIMessage,

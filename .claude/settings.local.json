@@ -3,7 +3,10 @@
     "allow": [
       "Bash(./gradlew:*)",
       "Bash(find:*)",
-      "Bash(uv run --directory locale-tui src/main.py:*)"
+      "Bash(uv run --directory locale-tui src/main.py:*)",
+      "Bash(./gradlew.bat tasks *)",
+      "Bash(./gradlew.bat assembleRelease)",
+      "Bash(git add *)"
     ],
     "deny": []
   }

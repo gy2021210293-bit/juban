@@ -47,4 +47,16 @@ class TTSManager(private val context: Context) {
             is TTSProviderSetting.ElevenLabs -> elevenLabsProvider.generateSpeech(context, providerSetting, request)
         }
     }
+
+    fun getPromptGuidance(providerSetting: TTSProviderSetting): String = when (providerSetting) {
+        is TTSProviderSetting.OpenAI -> openAIProvider.promptGuidance
+        is TTSProviderSetting.Gemini -> geminiProvider.promptGuidance
+        is TTSProviderSetting.SystemTTS -> systemProvider.promptGuidance
+        is TTSProviderSetting.MiniMax -> miniMaxProvider.promptGuidance
+        is TTSProviderSetting.Qwen -> qwenProvider.promptGuidance
+        is TTSProviderSetting.Groq -> groqProvider.promptGuidance
+        is TTSProviderSetting.XAI -> xaiProvider.promptGuidance
+        is TTSProviderSetting.MiMo -> miMoProvider.promptGuidance
+        is TTSProviderSetting.ElevenLabs -> elevenLabsProvider.promptGuidance
+    }
 }

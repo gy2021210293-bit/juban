@@ -364,6 +364,17 @@ class ResponseAPIMessageTest {
     }
 
     @Test
+    fun `auto response api omits reasoning controls`() {
+        val requestBody = invokeBuildRequestBody(
+            providerSetting = ProviderSetting.OpenAI(baseUrl = "https://api.openai.com/v1"),
+            params = createReasoningParams(reasoningLevel = ReasoningLevel.AUTO)
+        )
+
+        assertEquals("auto", requestBody["reasoning"]?.jsonObject?.get("summary")?.jsonPrimitive?.content)
+        assertFalse("AUTO must not send an explicit effort", "effort" in (requestBody["reasoning"]?.jsonObject ?: buildJsonObject { }))
+    }
+
+    @Test
     fun `volc response api should keep reasoning effort when non auto`() {
         val providerSetting = ProviderSetting.OpenAI(
             baseUrl = "https://ark.cn-beijing.volces.com/api/v3"

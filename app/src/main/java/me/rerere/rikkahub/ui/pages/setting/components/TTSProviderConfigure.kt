@@ -16,6 +16,7 @@ import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -322,14 +323,14 @@ private fun MiMoTTSConfiguration(
                 onValueChange(setting.copy(model = newModel))
             },
             modifier = Modifier.fillMaxWidth(),
-            placeholder = { Text("mimo-v2-tts") }
+            placeholder = { Text("mimo-v2.5-tts-voicedesign") }
         )
     }
 
-    // Voice
+    // VoiceDesign timbre description
     FormItem(
-        label = { Text(stringResource(R.string.setting_tts_page_voice)) },
-        description = { Text(stringResource(R.string.setting_tts_page_voice_description)) }
+        label = { Text("音色描述") },
+        description = { Text("用于 mimo-v2.5-tts-voicedesign 的 user 消息，不是 Voice ID") }
     ) {
         OutlinedTextField(
             value = setting.voice,
@@ -337,7 +338,19 @@ private fun MiMoTTSConfiguration(
                 onValueChange(setting.copy(voice = newVoice))
             },
             modifier = Modifier.fillMaxWidth(),
-            placeholder = { Text("mimo_default") }
+            placeholder = { Text("例如：温暖自然的年轻女声") }
+        )
+    }
+
+    FormItem(
+        label = { Text("智能润色播报文本") },
+        description = { Text("发送 optimize_text_preview；开启时由 MiMo 优化目标播报文本") }
+    ) {
+        Switch(
+            checked = setting.optimizeTextPreview,
+            onCheckedChange = { enabled ->
+                onValueChange(setting.copy(optimizeTextPreview = enabled))
+            }
         )
     }
 }

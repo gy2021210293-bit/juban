@@ -176,8 +176,10 @@ sealed class TTSProviderSetting {
         override var name: String = "MiMo TTS",
         val apiKey: String = "",
         val baseUrl: String = "https://api.xiaomimimo.com/v1",
-        val model: String = "mimo-v2-tts",
-        val voice: String = "mimo_default"
+        val model: String = "mimo-v2.5-tts-voicedesign",
+        // VoiceDesign uses this as the user-message timbre description, not a voice ID.
+        val voice: String = "A warm, natural young female voice.",
+        val optimizeTextPreview: Boolean = true
     ) : TTSProviderSetting() {
         override fun copyProvider(
             id: Uuid,

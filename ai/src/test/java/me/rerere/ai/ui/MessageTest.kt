@@ -39,11 +39,26 @@ class MessageTest {
     }
 
     @Test
-    fun `limitContext with normal size should return last N messages`() {
-        val messages = createTestMessages(5)
-        val result = messages.limitContext(3)
-        assertEquals(3, result.size)
-        assertEquals(messages.subList(2, 5), result)
+    fun `limitContext keeps the same boundary within one cache step`() {
+        val all = createTestMessages(20)
+        val starts = (11..14).map { size ->
+            all.subList(0, size).limitContext(10).first()
+        }
+
+        assertEquals(1, starts.distinct().size)
+        assertEquals(all[5], starts.first())
+        assertEquals(all[10], all.subList(0, 15).limitContext(10).first())
+    }
+
+    @Test
+    fun `limitContext retains between half and the limit`() {
+        val all = createTestMessages(40)
+
+        for (size in 11..40) {
+            val result = all.subList(0, size).limitContext(10)
+            assertTrue("size=$size produced ${result.size} messages", result.size in 5..10)
+            assertEquals(all.subList(size - result.size, size), result)
+        }
     }
 
     @Test
@@ -73,7 +88,8 @@ class MessageTest {
             UIMessage(role = MessageRole.ASSISTANT, parts = listOf(UIMessagePart.Text("Final response")))
         )
 
-        val result = messages.limitContext(2)
+        // 截断点落在已执行的工具结果上时，必须回退到完整的工具调用链。
+        val result = messages.limitContext(3)
         assertEquals(4, result.size)
         assertEquals(messages, result)
     }
@@ -105,7 +121,8 @@ class MessageTest {
             UIMessage(role = MessageRole.ASSISTANT, parts = listOf(UIMessagePart.Text("Final response")))
         )
 
-        val result = messages.limitContext(2)
+        // 截断点落在工具调用链内时，必须包含发起调用的用户消息。
+        val result = messages.limitContext(3)
         assertEquals(4, result.size)
         assertEquals(messages, result)
     }

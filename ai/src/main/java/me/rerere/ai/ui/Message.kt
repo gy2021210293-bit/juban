@@ -19,6 +19,7 @@ import me.rerere.ai.core.MessageRole
 import me.rerere.ai.core.TokenUsage
 import me.rerere.ai.provider.Model
 import me.rerere.ai.util.json
+import kotlin.math.roundToInt
 import kotlin.time.Clock
 import kotlin.time.Instant
 import kotlin.uuid.Uuid
@@ -281,10 +282,17 @@ fun List<UIMessagePart>.isEmptyUIMessage(): Boolean {
     }
 }
 
-fun List<UIMessage>.limitContext(size: Int): List<UIMessage> {
-    if (size <= 0 || this.size <= size) return this
+/**
+ * Limits context with a hysteresis window, so the retained-prefix boundary only moves in steps.
+ * This lets compatible providers reuse their prompt cache for several turns between truncations.
+ */
+fun List<UIMessage>.limitContext(limit: Int): List<UIMessage> {
+    if (limit <= 0 || this.size <= limit) return this
 
-    val startIndex = this.size - size
+    val target = (limit * 0.5f).roundToInt().coerceIn(1, limit)
+    val stride = (limit - target).coerceAtLeast(1)
+    val startIndex = (((this.size - limit) / stride + 1) * stride)
+        .coerceAtMost(this.size - 1)
     var adjustedStartIndex = startIndex
 
     // 循环往前查找，直到满足所有依赖条件

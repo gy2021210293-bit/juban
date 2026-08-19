@@ -6,6 +6,7 @@
 
 package me.rerere.rikkahub.data.service
 
+import me.rerere.ai.core.MessageRole
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
 import org.junit.Assert.assertEquals
@@ -103,5 +104,44 @@ class ProactiveToolAuthorizationTest {
                 message.parts.filterIsInstance<UIMessagePart.Text>().joinToString("") { it.text }
             },
         )
+    }
+
+    @Test
+    fun proactiveIdleTimeStaysInTheCurrentRequestAfterHistory() {
+        val messages = buildInitialProactiveMessages(
+            systemPrompt = "stable system prompt",
+            historyMessages = listOf(UIMessage.user("history user"), UIMessage.assistant("history assistant")),
+            processedUserMessages = listOf(
+                UIMessage.user("当前为定时主动消息，距离用户上次回复已过去 42 分钟。请决定是否发消息。"),
+            ),
+        )
+
+        assertEquals("stable system prompt", messages.first().parts.filterIsInstance<UIMessagePart.Text>().single().text)
+        assertEquals(
+            "当前为定时主动消息，距离用户上次回复已过去 42 分钟。请决定是否发消息。",
+            messages.last().parts.filterIsInstance<UIMessagePart.Text>().single().text,
+        )
+    }
+
+    @Test
+    fun dynamicContextIsNotMergedWithWorkflowInstruction() {
+        val dynamicContext = "<dynamic_context generated_at=\"2026-08-18T10:00:00Z\">snapshot</dynamic_context>"
+        val messages = mergeAdjacentSameRoleMessages(
+            buildInitialProactiveMessages(
+                systemPrompt = "system",
+                historyMessages = listOf(UIMessage.assistant("history")),
+                dynamicContext = dynamicContext,
+                processedUserMessages = listOf(UIMessage.user("执行工作流任务")),
+            )
+        )
+
+        assertEquals(
+            listOf(MessageRole.SYSTEM, MessageRole.ASSISTANT, MessageRole.USER, MessageRole.USER),
+            messages.map { it.role },
+        )
+        assertEquals(dynamicContext, messages[2].parts.filterIsInstance<UIMessagePart.Text>().single().text)
+        assertTrue(messages[2].metadata?.get("dynamic_environment")?.toString() == "true")
+        assertEquals("执行工作流任务", messages[3].parts.filterIsInstance<UIMessagePart.Text>().single().text)
+        assertEquals(null, messages[3].metadata)
     }
 }

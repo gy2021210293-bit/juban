@@ -45,6 +45,8 @@ import me.rerere.rikkahub.data.ai.transformers.InputMessageTransformer
 import me.rerere.rikkahub.data.ai.transformers.OutputMessageTransformer
 import me.rerere.rikkahub.data.ai.transformers.TemplateTransformer
 import me.rerere.rikkahub.data.ai.DYNAMIC_CONTEXT_SYSTEM_POLICY
+import me.rerere.rikkahub.data.ai.buildCodeBlockPrompt
+import me.rerere.rikkahub.data.ai.buildMemoryPrompt
 import me.rerere.rikkahub.data.ai.transformers.TimeReminderTransformer
 import me.rerere.rikkahub.data.ai.transformers.PromptInjectionTransformer
 import me.rerere.rikkahub.data.ai.transformers.PlaceholderTransformer
@@ -61,6 +63,7 @@ import me.rerere.rikkahub.data.ai.tools.SystemTools
 import me.rerere.rikkahub.data.ai.tools.createSearchTools
 import me.rerere.rikkahub.data.ai.tools.createSkillTools
 import me.rerere.rikkahub.data.ai.tools.ToolNaming
+import me.rerere.rikkahub.data.ai.tools.buildWriteFilesTool
 import me.rerere.rikkahub.data.ai.mcp.McpManager
 import me.rerere.rikkahub.data.files.SkillManager
 import me.rerere.rikkahub.plugin.provider.PluginToolProvider
@@ -541,18 +544,35 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
 
                 // 获取历史消息（先过滤掉悬空的工具调用消息，避免 tool_use 结构不完整触发 400）
                 val historyMessages = filterInvalidToolMessages(
-                    conversation?.currentMessages?.let {
-                        if (assistant.contextMessageSize > 0) {
-                            it.takeLast(assistant.contextMessageSize)
-                        } else it
-                    } ?: emptyList()
+                    conversation?.currentMessages?.limitContext(assistant.contextMessageSize)
+                        ?: emptyList()
                 )
 
-                // 构建系统提示词（包含记忆 + 上下文，都放在最后面避免被网关淹没）
+                // 构建工具列表（与 ChatService 保持一致）——需在系统提示词之前准备好，
+                // 因为系统提示词里的工具说明要基于实际启用/传给模型的工具生成
+                val allowAllToolsAndPlugins = if (isWorkflowWake) {
+                    intent?.getBooleanExtra(EXTRA_ALLOW_ALL_TOOLS_AND_PLUGINS, false) ?: false
+                } else {
+                    proactiveSetting.allowAllToolsAndPlugins
+                }
+                val tools = buildTools(
+                    settings = settings,
+                    assistant = assistant,
+                    model = model,
+                    allowAllToolsAndPlugins = allowAllToolsAndPlugins,
+                    recentMessages = historyMessages,
+                    workspaceCwd = conversation?.workspaceCwd,
+                    conversationId = conversationId,
+                )
+
+                // 构建系统提示词（固定骨架与普通消息对齐，触发指令放在最末尾，
+                // 让普通消息↔主动/工作流/设备事件共享尽可能长的固定前缀，利于 prefix cache）
                 val systemPrompt = buildSystemPrompt(
                     assistant = assistant,
                     settings = settings,
-                    idleMinutes = idleMinutes,
+                    model = model,
+                    tools = tools,
+                    historyMessages = historyMessages,
                     jumpThreshold = proactiveSetting.jumpIdleThresholdMinutes,
                     isFromDeviceEvent = isFromDeviceEvent,
                     workflowWakeContext = workflowWakeContext,
@@ -565,9 +585,11 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                         if (isWorkflowWake) {
                             buildWorkflowWakeUserInstruction(workflowWakeContext.orEmpty())
                         } else if (isFromDeviceEvent) {
-                            "请根据以上用户动向决定是否发消息。没什么好说的就回复 [PASS]。"
+                            "当前由用户手机动向触发，距离用户上次回复已过去 $idleMinutes 分钟。" +
+                                "请根据以上用户动向决定是否发消息。没什么好说的就回复 [PASS]。"
                         } else {
-                            "请根据以上上下文决定是否发消息。没什么好说的就回复 [PASS] 即可，不要强行找话题。"
+                            "当前为定时主动消息，距离用户上次回复已过去 $idleMinutes 分钟。" +
+                                "请根据以上上下文决定是否发消息。没什么好说的就回复 [PASS] 即可，不要强行找话题。"
                         }
                     ))
                 )
@@ -607,22 +629,6 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 }
 
                 val providerImpl = providerManager.getProviderByType(providerSetting)
-
-                // 构建工具列表（与 ChatService 保持一致）
-                val allowAllToolsAndPlugins = if (isWorkflowWake) {
-                    intent?.getBooleanExtra(EXTRA_ALLOW_ALL_TOOLS_AND_PLUGINS, false) ?: false
-                } else {
-                    proactiveSetting.allowAllToolsAndPlugins
-                }
-                val tools = buildTools(
-                    settings = settings,
-                    assistant = assistant,
-                    model = model,
-                    allowAllToolsAndPlugins = allowAllToolsAndPlugins,
-                    recentMessages = historyMessages,
-                    workspaceCwd = conversation?.workspaceCwd,
-                    conversationId = conversationId,
-                )
 
                 // 主动消息场景：支持工具调用，但限制最大步数
                 // temperature 不强制默认 0.8f，保持与 GenerationHandler 一致（assistant.temperature 为 null 时不传），
@@ -855,29 +861,21 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
     private suspend fun buildSystemPrompt(
         assistant: Assistant,
         settings: Settings,
-        idleMinutes: Int = 0,
+        model: Model,
+        tools: List<Tool> = emptyList(),
+        historyMessages: List<UIMessage> = emptyList(),
         jumpThreshold: Int = 120,
         isFromDeviceEvent: Boolean = false,
         workflowWakeContext: String? = null,
     ): String {
         return buildString {
             // 基础系统提示词
-            val effectiveSystemPrompt = if (assistant.allowConversationSystemPrompt) {
-                assistant.systemPrompt
-            } else {
-                assistant.systemPrompt
-            }
-            if (effectiveSystemPrompt.isNotBlank()) {
-                append(effectiveSystemPrompt)
+            if (assistant.systemPrompt.isNotBlank()) {
+                append(assistant.systemPrompt)
             }
 
-            if (settings.systemToolsSetting.dynamicContextEnabled) {
-                appendLine()
-                appendLine()
-                append(DYNAMIC_CONTEXT_SYSTEM_POLICY)
-            }
-
-            // 记忆（设备事件上下文移到最后面，避免被网关注入的内容淹没）
+            // 记忆：与普通消息路径 (GenerationHandler.buildMemoryPrompt) 保持逐字一致，
+            // 这样记忆内容相同时两边的 system prompt 前缀可命中 prefix cache
             if (assistant.enableMemory) {
                 val memories = if (assistant.useGlobalMemory) {
                     memoryRepository.getGlobalMemories()
@@ -886,14 +884,57 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 }
                 if (memories.isNotEmpty()) {
                     appendLine()
-                    appendLine()
-                    appendLine("## 记忆")
-                    memories.forEach { memory ->
-                        appendLine("- ${memory.content}")
-                    }
+                    append(buildMemoryPrompt(memories))
                 }
             }
 
+            // 代码块规则：与普通消息路径保持一致
+            appendLine()
+            append(buildCodeBlockPrompt())
+
+            // 工具说明：基于实际启用/传给模型的工具逐个追加（与普通消息一致）
+            tools.forEach { tool ->
+                appendLine()
+                append(tool.systemPrompt(model, historyMessages))
+            }
+
+            if (settings.systemToolsSetting.dynamicContextEnabled) {
+                appendLine()
+                appendLine()
+                append(DYNAMIC_CONTEXT_SYSTEM_POLICY)
+            }
+
+            // 允许跳过回复（与普通消息路径一致）
+            if (assistant.allowSkipReply) {
+                appendLine()
+                appendLine()
+                appendLine("## Skip Reply")
+                appendLine("If you determine that no reply is needed (e.g., the user's message doesn't require a response, or you have nothing meaningful to add), you may reply with exactly `[SKIP]` (without any other text). This message will be hidden from the user. Use this sparingly and only when truly appropriate.")
+            }
+
+            // 屏幕跳转能力（与普通消息路径一致，AI 总是可以跳转）
+            appendLine()
+            appendLine()
+            appendLine("## 屏幕跳转能力")
+            appendLine("你可以在回复末尾追加 [JUMP] 标记（单独一行）来把聊天界面拉到用户屏幕最前面。")
+            appendLine("适用场景：")
+            appendLine("- 用户说要去别的应用，你觉得需要把用户拉回来时")
+            appendLine("- 你觉得接下来的内容需要用户立即看到时")
+            appendLine("不适用场景：")
+            appendLine("- 一般闲聊不需要跳转")
+            appendLine("- 用户正在跟你正常对话时不需要跳转")
+            appendLine("[JUMP] 标记不会展示给用户，仅用于触发屏幕跳转。")
+
+            // 分气泡（与普通消息路径一致）
+            if (assistant.splitBubbleByLine) {
+                appendLine()
+                appendLine()
+                appendLine("## Message Bubbles")
+                appendLine("Your reply will be automatically split into separate chat bubbles at every line break (\\n) you write, similar to how a person sends several short texts in a row instead of one long message. You are fully in control of this: write a line break whenever you want the previous thought/sentence to appear as its own bubble, and keep things on the same line when they belong together. Do not insert blank lines purely for spacing — every line break becomes a new bubble, so use them intentionally. Exception: line breaks inside fenced code blocks (```) and Markdown tables are preserved as-is and will NOT create new bubbles, since those must stay intact as a single block.")
+            }
+
+            // 触发指令段：始终放在 system prompt 的最末尾，
+            // 保证普通消息↔主动/工作流/设备事件之间的固定前缀不被触发指令打断，利于 prefix cache
             if (!workflowWakeContext.isNullOrBlank()) {
                 appendLine()
                 appendLine()
@@ -904,21 +945,19 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 appendLine("不要用 SKIP、忽略任务或泛化的主动消息策略替代自定义处理要求。")
                 appendLine("[JUMP] 标记不会展示给用户，仅用于触发屏幕跳转。")
             } else if (isFromDeviceEvent) {
-                // 激进模式设备事件触发的专用提示词 + 设备事件上下文（放在最后面，网关追加内容之后模型最后看到的就是这个）
                 appendLine()
                 appendLine()
                 appendLine("## ⚠️ 当前触发原因：用户手机动向（设备事件触发）")
                 appendLine("你是因为检测到用户的手机操作动向（切换应用/亮屏锁屏/回桌面）而被触发的。")
                 appendLine("请特别注意：这是设备事件触发，不是定时主动消息。根据用户的手机操作动向来决定是否发消息。")
                 appendLine("绝对不要复述上一轮的对话内容，要发新的话题或新的关心。")
-                appendLine("请根据用户的动向，自然地决定是否主动发一条消息。距离用户上次回复已过去 $idleMinutes 分钟。")
+                appendLine("请根据用户的动向，自然地决定是否主动发一条消息。")
                 appendLine("如果你觉得现在没什么好说的，或者没什么有趣的话题，请只回复 [PASS] 即可。")
                 appendLine("[JUMP] 标记不会展示给用户，仅用于触发屏幕跳转。")
             } else {
                 appendLine()
                 appendLine()
                 appendLine("## 主动消息触发（定时触发）")
-                appendLine("距离用户上次回复已过去 $idleMinutes 分钟。")
                 appendLine("这是定时触发的主动消息，不是设备事件触发。")
                 appendLine("绝对不要复述上一轮的对话内容，要发新的话题或新的关心。")
                 appendLine("如果你觉得现在没什么好说的，或者没什么有趣的话题，请只回复 [PASS] 即可。")
@@ -1004,6 +1043,8 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
     /**
      * 默认保留原来的主动消息精简工具面，避免无意扩大后台权限和请求体。
      * 用户显式授权后改用 ToolSurfaceBuilder 的完整工具面。
+     * 两个分支都额外带上 write_files，使 system prompt 中与普通消息一致的
+     * Code Block Rules 工具说明与实际可用工具保持一致。
      */
     private suspend fun buildTools(
         settings: Settings,
@@ -1015,22 +1056,33 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
         conversationId: Uuid,
     ): List<Tool> {
         if (allowAllToolsAndPlugins) {
-            return toolSurfaceBuilder.build(
-                assistant = assistant,
-                settings = settings,
-                invocationContext = me.rerere.rikkahub.data.ai.tools.ToolInvocationContext(
-                    callerAssistantId = assistant.id.toString(),
-                    callerConversationId = conversationId.toString(),
-                    isHeadless = true,
-                    modelCanSeeImages = model.inputModalities.contains(
-                        me.rerere.ai.provider.Modality.IMAGE,
-                    ),
-                ),
-                recentMessages = recentMessages,
-                workspaceCwd = workspaceCwd,
-            )
+            // 完整工具面之上额外补充 write_files，使 system prompt 中与普通消息一致的
+            // Code Block Rules 工具说明与实际可用工具保持一致（避免说明有工具、实际却没有）
+            return buildList {
+                add(buildWriteFilesTool(conversationId.toString()))
+                addAll(
+                    toolSurfaceBuilder.build(
+                        assistant = assistant,
+                        settings = settings,
+                        invocationContext = me.rerere.rikkahub.data.ai.tools.ToolInvocationContext(
+                            callerAssistantId = assistant.id.toString(),
+                            callerConversationId = conversationId.toString(),
+                            isHeadless = true,
+                            modelCanSeeImages = model.inputModalities.contains(
+                                me.rerere.ai.provider.Modality.IMAGE,
+                            ),
+                        ),
+                        recentMessages = recentMessages,
+                        workspaceCwd = workspaceCwd,
+                    )
+                )
+            }
         }
         return buildList {
+            // 文件写入工具 - 与普通消息路径 (GenerationHandler) 保持一致，
+            // 使 Code Block Rules 说明与实际可用工具一致
+            add(buildWriteFilesTool(conversationId.toString()))
+
             // 本地工具（助手已启用的）
             addAll(
                 localTools.getTools(
@@ -1132,27 +1184,6 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
             if (!hasPendingTools) return@filterNot false
             val hasResumableTool = tools.any { !it.isExecuted && it.approvalState.canResumeToolExecution() }
             !hasResumableTool
-        }
-    }
-
-    /**
-     * 合并相邻同角色消息（ASSISTANT-ASSISTANT / USER-USER 都要合并），
-     * 避免相邻同角色消息触发 Anthropic 等 API 的 400 错误
-     * （"roles must alternate between user and assistant"）。
-     * SYSTEM 角色在本文件的消息列表里只会出现一次（列表最前面），不会与自身相邻，无需特殊处理。
-     */
-    private fun mergeAdjacentSameRoleMessages(messages: List<UIMessage>): List<UIMessage> {
-        if (messages.size < 2) return messages
-        return messages.fold(emptyList()) { acc, msg ->
-            val prev = acc.lastOrNull()
-            if (prev != null && prev.role == msg.role) {
-                acc.dropLast(1) + prev.copy(
-                    parts = prev.parts + msg.parts,
-                    metadata = prev.metadata ?: msg.metadata,
-                )
-            } else {
-                acc + msg
-            }
         }
     }
 
@@ -1329,6 +1360,33 @@ internal fun canExecuteProactiveTool(
     allowAllToolsAndPlugins: Boolean,
     globallyAutoApproved: Boolean,
 ): Boolean = !needsApproval || allowAllToolsAndPlugins || globallyAutoApproved
+
+/**
+ * Merge adjacent roles for providers that require alternation, while keeping a dynamic snapshot
+ * separate from the real request so its metadata remains a valid gateway boundary.
+ */
+internal fun mergeAdjacentSameRoleMessages(messages: List<UIMessage>): List<UIMessage> {
+    if (messages.size < 2) return messages
+    return messages.fold(emptyList()) { acc, msg ->
+        val prev = acc.lastOrNull()
+        if (
+            prev != null &&
+            prev.role == msg.role &&
+            !prev.isDynamicEnvironmentSnapshot() &&
+            !msg.isDynamicEnvironmentSnapshot()
+        ) {
+            acc.dropLast(1) + prev.copy(
+                parts = prev.parts + msg.parts,
+                metadata = prev.metadata ?: msg.metadata,
+            )
+        } else {
+            acc + msg
+        }
+    }
+}
+
+private fun UIMessage.isDynamicEnvironmentSnapshot(): Boolean =
+    metadata?.get("dynamic_environment")?.toString() == "true"
 
 internal fun buildWorkflowWakeUserInstruction(workflowWakeContext: String): String = buildString {
     appendLine("这是用户已批准执行的工作流任务。")

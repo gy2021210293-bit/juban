@@ -17,4 +17,11 @@ interface TTSProvider<T : TTSProviderSetting> {
         providerSetting: T,
         request: TTSRequest
     ): Flow<AudioChunk>
+
+    /**
+     * Provider-specific instructions for AI-authored text-to-speech requests.
+     * Empty means the provider does not support inline delivery controls.
+     */
+    val promptGuidance: String
+        get() = ""
 }

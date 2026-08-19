@@ -514,13 +514,7 @@ private fun DrawerActions(
     navController: Navigator,
     drawerItemAlpha: Float = 1f,
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Text(
-            text = "常用",
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
-        )
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         DrawerNavigationItem(
             icon = HugeIcons.Rocket01,
             label = "Mini Apps",
@@ -611,7 +605,7 @@ private fun DrawerNavigationItem(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 8.dp, vertical = 10.dp),
+                .padding(horizontal = 8.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {

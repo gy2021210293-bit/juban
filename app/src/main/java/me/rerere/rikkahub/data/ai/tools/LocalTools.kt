@@ -28,7 +28,10 @@ import me.rerere.rikkahub.data.ai.newGeneratedImageJobId
 import me.rerere.rikkahub.data.ai.toToolResult
 import me.rerere.rikkahub.data.event.AppEvent
 import me.rerere.rikkahub.data.event.AppEventBus
+import me.rerere.rikkahub.data.datastore.SettingsStore
+import me.rerere.rikkahub.data.datastore.getSelectedTTSProvider
 import me.rerere.rikkahub.service.VoiceCallService
+import me.rerere.tts.provider.TTSManager
 import me.rerere.rikkahub.utils.readClipboardText
 import me.rerere.rikkahub.utils.writeClipboardText
 import java.time.ZoneId
@@ -144,6 +147,8 @@ class LocalTools(
     private val workflowRepository: me.rerere.rikkahub.workflow.repository.WorkflowRepository,
     private val workflowEngine: me.rerere.rikkahub.workflow.execution.WorkflowEngine,
     private val sshHostRepository: me.rerere.rikkahub.data.repository.SshHostRepository,
+    private val ttsManager: TTSManager,
+    private val settingsStore: SettingsStore,
 ) {
     val javascriptTool by lazy {
         Tool(
@@ -310,6 +315,11 @@ class LocalTools(
                 The tool returns immediately; audio plays in the background on the device.
                 Provide natural, readable text without markdown formatting.
             """.trimIndent().replace("\n", " "),
+            systemPrompt = { _, _ ->
+                settingsStore.settingsFlow.value.getSelectedTTSProvider()
+                    ?.let(ttsManager::getPromptGuidance)
+                    .orEmpty()
+            },
             parameters = {
                 InputSchema.Obj(
                     properties = buildJsonObject {

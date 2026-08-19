@@ -81,6 +81,18 @@ class DynamicContextProviderTest {
     }
 
     @Test
+    fun formatter_usesIsoTimestampForGatewayFreshnessChecks() {
+        val prompt = DynamicContextFormatter.format(
+            generatedAtMs = 0L,
+            sections = listOf("- device: ready"),
+        )
+
+        assertTrue(
+            prompt.startsWith("<dynamic_context generated_at=\"1970-01-01T00:00:00Z\">")
+        )
+    }
+
+    @Test
     fun formatter_staysWithinPromptBudget() {
         val prompt = DynamicContextFormatter.format(
             generatedAtMs = 0L,

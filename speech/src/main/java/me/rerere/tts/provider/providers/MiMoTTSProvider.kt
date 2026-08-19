@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -27,6 +28,8 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.Base64
 import java.util.concurrent.TimeUnit
+
+internal const val MIMO_VOICE_DESIGN_MODEL = "mimo-v2.5-tts-voicedesign"
 
 // MiMo 流式音频按文档示例使用 24kHz PCM16LE
 private const val MIMO_SAMPLE_RATE = 24000
@@ -53,6 +56,42 @@ private data class MiMoDelta(
 private data class MiMoAudio(
     val data: String? = null
 )
+
+@Serializable
+private data class MiMoVoiceDesignResponse(
+    val choices: List<MiMoVoiceDesignChoice> = emptyList()
+)
+
+@Serializable
+private data class MiMoVoiceDesignChoice(
+    val message: MiMoVoiceDesignMessage? = null
+)
+
+@Serializable
+private data class MiMoVoiceDesignMessage(
+    val audio: MiMoAudio? = null
+)
+
+internal fun buildMiMoVoiceDesignRequest(
+    providerSetting: TTSProviderSetting.MiMo,
+    request: TTSRequest
+): JsonObject = buildJsonObject {
+    put("model", providerSetting.model)
+    put("messages", buildJsonArray {
+        add(buildJsonObject {
+            put("role", "user")
+            put("content", providerSetting.voice)
+        })
+        add(buildJsonObject {
+            put("role", "assistant")
+            put("content", request.text)
+        })
+    })
+    put("audio", buildJsonObject {
+        put("format", "wav")
+        put("optimize_text_preview", providerSetting.optimizeTextPreview)
+    })
+}
 
 internal fun decodeMiMoAudioData(data: String): ByteArray? {
     val payload = data.trim()
@@ -118,11 +157,61 @@ class MiMoTTSProvider : TTSProvider<TTSProviderSetting.MiMo> {
         .readTimeout(120, TimeUnit.SECONDS)
         .build()
 
+    override val promptGuidance: String = """
+        The active MiMo text-to-speech engine, including mimo-v2.5-tts-voicedesign, supports style and audio tags in
+        the text_to_speech tool's "text" argument.
+        Put tags ONLY in that tool argument, never in the visible reply. Use them sparingly.
+        Put one overall style tag at the beginning, for example (温柔), (开心 磁性), or (唱歌).
+        Inline tags may refine delivery, for example [笑], [轻笑], [叹气], [吸气], [哽咽], [气声].
+        Do not put punctuation inside tags, do not use Markdown emphasis, and do not place a (…) group immediately after an inline [tag].
+        Example: (磁性)夜已经深了[叹气]城市还在呼吸。
+    """.trimIndent()
+
     override fun generateSpeech(
         context: Context,
         providerSetting: TTSProviderSetting.MiMo,
         request: TTSRequest
     ): Flow<AudioChunk> = flow {
+        if (providerSetting.model == MIMO_VOICE_DESIGN_MODEL) {
+            val requestBody = buildMiMoVoiceDesignRequest(providerSetting, request)
+            val httpRequest = Request.Builder()
+                .url("${providerSetting.baseUrl}/chat/completions")
+                .addHeader("api-key", providerSetting.apiKey)
+                .addHeader("Content-Type", "application/json")
+                .post(requestBody.toString().toRequestBody(JSON_MEDIA_TYPE))
+                .build()
+
+            httpClient.newCall(httpRequest).execute().use { response ->
+                val responseBody = response.body.string()
+                if (!response.isSuccessful) {
+                    throw IllegalStateException("MiMo VoiceDesign HTTP ${response.code}: $responseBody")
+                }
+                val encodedAudio = mimoJson
+                    .decodeFromString<MiMoVoiceDesignResponse>(responseBody)
+                    .choices
+                    .firstOrNull()
+                    ?.message
+                    ?.audio
+                    ?.data
+                    ?: throw IllegalStateException("MiMo VoiceDesign returned no audio data")
+
+                emit(
+                    AudioChunk(
+                        data = Base64.getDecoder().decode(encodedAudio),
+                        format = AudioFormat.WAV,
+                        isLast = true,
+                        metadata = mapOf(
+                            "provider" to "mimo",
+                            "model" to providerSetting.model,
+                            "voice_description" to providerSetting.voice,
+                            "optimize_text_preview" to providerSetting.optimizeTextPreview.toString()
+                        )
+                    )
+                )
+            }
+            return@flow
+        }
+
         // OpenAI 兼容的 chat/completions SSE 流式返回 音频增量在 delta.audio.data
         val requestBody = buildJsonObject {
             put("model", providerSetting.model)

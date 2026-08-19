@@ -74,7 +74,7 @@ val appModule = module {
     }
 
     single {
-        LocalTools(get(), get(), get(), get(), get())
+        LocalTools(get(), get(), get(), get(), get(), get(), get())
     }
 
     // 微信 Bot (iLink 协议) HTTP 客户端

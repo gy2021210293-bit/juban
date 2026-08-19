@@ -64,6 +64,7 @@ import me.rerere.ai.ui.canResumeToolExecution
 import me.rerere.ai.ui.finishPendingTools
 import me.rerere.ai.ui.finishReasoning
 import me.rerere.ai.ui.isEmptyInputMessage
+import me.rerere.ai.ui.limitContext
 import me.rerere.common.android.Logging
 import me.rerere.rikkahub.AppScope
 import me.rerere.rikkahub.CHAT_COMPLETED_NOTIFICATION_CHANNEL_ID
@@ -611,9 +612,8 @@ class ChatService(
                 }
                 val providerHandler = providerManager.getProviderByType(provider)
 
-                val historyMessages = currentConversation.currentMessages.let {
-                    if (assistant.contextMessageSize > 0) it.takeLast(assistant.contextMessageSize) else it
-                }
+                val historyMessages = currentConversation.currentMessages
+                    .limitContext(assistant.contextMessageSize)
 
                 // 记录生成开始前的消息节点数量，作为"生成期间是否有新消息插入"的判断基准
                 val nodeCountBeforeGeneration = currentConversation.messageNodes.size
