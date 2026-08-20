@@ -20,7 +20,7 @@ object SystemPromptBuilder {
         tools: List<Tool>,
         model: Model,
         settings: Settings,
-        conversationRepository: ConversationRepository,
+        conversationRepository: ConversationRepository? = null,
         staticPluginPromptInjections: List<String> = emptyList(),
         dynamicPluginEnabled: Boolean = false,
         allowSkipReply: Boolean = assistant.allowSkipReply,

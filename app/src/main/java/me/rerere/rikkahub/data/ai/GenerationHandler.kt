@@ -404,10 +404,9 @@ class GenerationHandler(
                 memories = memories,
                 tools = tools,
                 model = model,
-                historyMessages = messages,
+                settings = settings,
                 staticPluginPromptInjections = staticPluginPromptInjections,
-                dynamicContextEnabled = settings.systemToolsSetting.dynamicContextEnabled,
-                pluginContextEnabled = dynamicPluginPromptInjections.isNotEmpty(),
+                dynamicPluginEnabled = dynamicPluginPromptInjections.isNotEmpty(),
             )
 
             // 普通聊天特有段：外置记忆召回 + 最近对话摘要（每次查询结果不同，放在稳定前缀之后）

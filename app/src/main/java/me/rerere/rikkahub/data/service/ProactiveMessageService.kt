@@ -248,7 +248,43 @@ class ProactiveMessageService : KoinComponent {
         }
     }
 
-    suspend fun buildProactiveContext(context: Context, settings: Settings): String {
+    /**
+     * 构建完整的主动消息 USER 内容：触发指令 + 主动上下文 + 动态上下文 + 空闲时间提示。
+     * 将动态信息集中在 USER 中，SYSTEM 只保留稳定前缀，最大化 prompt cache 复用。
+     */
+    suspend fun buildProactiveMessageContext(
+        context: Context,
+        settings: Settings,
+        isFromDeviceEvent: Boolean,
+        dynamicContext: String,
+        idleMinutes: Int,
+    ): String = buildString {
+        // 触发指令（原 buildSystemPrompt 中的动态部分）
+        append(buildTriggerInstruction(isFromDeviceEvent = isFromDeviceEvent))
+
+        // 主动消息上下文（时间、规则等）
+        appendLine()
+        append(buildProactiveContextBody())
+
+        // 动态上下文（位置、电量等环境信息）
+        if (dynamicContext.isNotBlank()) {
+            appendLine()
+            appendLine()
+            append(dynamicContext)
+        }
+
+        // 空闲时间与决策提示
+        appendLine()
+        appendLine()
+        append("距离用户上次回复已过去 $idleMinutes 分钟。")
+        append("请根据以上上下文决定是否发消息。没什么好说的就回复 [PASS] 即可，不要强行找话题。")
+    }
+
+    /**
+     * 主动消息上下文正文：时间信息 + 生成规则。
+     * 从原 buildProactiveContext 提取，不含触发指令和空闲时间（由调用方组合）。
+     */
+    private suspend fun buildProactiveContextBody(): String {
         val sb = StringBuilder()
         sb.appendLine("[主动消息上下文]")
 
@@ -522,23 +558,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 // 构建上下文
                 val idleMinutes = runCatching { val last = proactiveMessageService.getLastMessageTimeMs(); if (last > 0) ((System.currentTimeMillis() - last) / 60000L).toInt() else Int.MAX_VALUE }.getOrDefault(Int.MAX_VALUE)
 
-                // 如果有设备事件上下文（激进模式），使用它替代常规上下文；否则使用常规上下文
-                val baseContext = if (isWorkflowWake) {
-                    workflowWakeContext.orEmpty()
-                } else if (deviceEventContext != null) {
-                    deviceEventContext
-                } else {
-                    proactiveMessageService.buildProactiveContext(
-                        this@ProactiveMessageTriggerService, settings
-                    )
-                }
                 val dynamicContext = dynamicContextProvider.build(settings)
-                val contextStr = listOf(
-                    baseContext.takeUnless { isWorkflowWake }.orEmpty(),
-                    dynamicContext,
-                )
-                    .filter { it.isNotBlank() }
-                    .joinToString("\n\n")
 
                 // 获取历史消息（先过滤掉悬空的工具调用消息，避免 tool_use 结构不完整触发 400）
                 val historyMessages = filterInvalidToolMessages(
@@ -563,33 +583,31 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                     conversationId = conversationId,
                 )
 
-                // 构建系统提示词（固定骨架与普通消息对齐，触发指令放在最末尾，
-                // 让普通消息↔主动/工作流/设备事件共享尽可能长的固定前缀，利于 prefix cache）
+                // 构建系统提示词（只含稳定前缀，触发指令放在 USER 中以最大化 prefix cache）
                 val systemPrompt = buildSystemPrompt(
                     assistant = assistant,
                     settings = settings,
                     model = model,
                     tools = tools,
                     historyMessages = historyMessages,
-                    jumpThreshold = proactiveSetting.jumpIdleThresholdMinutes,
-                    isFromDeviceEvent = isFromDeviceEvent,
-                    workflowWakeContext = workflowWakeContext,
                 )
 
-                // The actual request stays after the ephemeral context message.
+                // 构建 USER 消息：触发指令 + 主动上下文 + 动态上下文 + 空闲时间
+                // 工作流唤醒的 USER 指令由 buildWorkflowWakeUserInstruction 单独处理
+                val contextStr = if (isWorkflowWake) {
+                    buildWorkflowWakeUserInstruction(workflowWakeContext.orEmpty())
+                } else {
+                    proactiveMessageService.buildProactiveMessageContext(
+                        context = this@ProactiveMessageTriggerService,
+                        settings = settings,
+                        isFromDeviceEvent = isFromDeviceEvent,
+                        dynamicContext = dynamicContext,
+                        idleMinutes = idleMinutes,
+                    )
+                }
                 val userMessage = UIMessage(
                     role = MessageRole.USER,
-                    parts = listOf(UIMessagePart.Text(
-                        if (isWorkflowWake) {
-                            buildWorkflowWakeUserInstruction(workflowWakeContext.orEmpty())
-                        } else if (isFromDeviceEvent) {
-                            "当前由用户手机动向触发，距离用户上次回复已过去 $idleMinutes 分钟。" +
-                                "请根据以上用户动向决定是否发消息。没什么好说的就回复 [PASS]。"
-                        } else {
-                            "当前为定时主动消息，距离用户上次回复已过去 $idleMinutes 分钟。" +
-                                "请根据以上上下文决定是否发消息。没什么好说的就回复 [PASS] 即可，不要强行找话题。"
-                        }
-                    ))
+                    parts = listOf(UIMessagePart.Text(contextStr))
                 )
 
                 // 应用输入转换器
@@ -602,12 +620,13 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 )
 
                 // 组合完整消息列表：System + History + User Context
-                // 合并相邻同角色消息（包括 history 末尾与合成 User 消息之间可能出现的 USER-USER 相邻），避免 400
+                // contextStr 已包含全部动态信息（触发指令+主动上下文+动态上下文+空闲时间），
+                // 通过 processedUserMessages 传入，不再作为单独的 dynamicContext 消息插入，避免重复。
                 val messages = mergeAdjacentSameRoleMessages(
                     buildInitialProactiveMessages(
                         systemPrompt = systemPrompt,
                         historyMessages = historyMessages,
-                        dynamicContext = contextStr,
+                        dynamicContext = "",
                         processedUserMessages = processedUserMessages,
                     )
                 )
@@ -853,8 +872,8 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
     }
 
     /**
-     * 构建系统提示词，包含记忆等内容
-     * isFromDeviceEvent: 是否由激进模式设备事件触发
+     * 构建系统提示词（只含稳定前缀，与普通消息共享以最大化 prefix cache）。
+     * 动态触发指令已移至 USER 消息中。
      */
     private suspend fun buildSystemPrompt(
         assistant: Assistant,
@@ -862,9 +881,6 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
         model: Model,
         tools: List<Tool> = emptyList(),
         historyMessages: List<UIMessage> = emptyList(),
-        jumpThreshold: Int = 120,
-        isFromDeviceEvent: Boolean = false,
-        workflowWakeContext: String? = null,
     ): String {
         // 加载 memory
         val memories = if (assistant.enableMemory) {
@@ -882,47 +898,13 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
             memories = memories,
             tools = tools,
             model = model,
-            historyMessages = historyMessages,
+            settings = settings,
+            conversationRepository = conversationRepository,
             staticPluginPromptInjections = emptyList(), // 主动消息暂不支持静态插件注入
-            dynamicContextEnabled = settings.systemToolsSetting.dynamicContextEnabled,
-            pluginContextEnabled = false,
+            dynamicPluginEnabled = settings.systemToolsSetting.dynamicContextEnabled,
         )
 
-        // 触发指令段追加在稳定前缀之后（同一个 system message 末尾）
-        return buildString {
-            append(systemPrefix)
-
-            // 触发指令段：始终放在 system prompt 的最末尾，
-            // 保证普通消息↔主动/工作流/设备事件之间的固定前缀不被触发指令打断，利于 prefix cache
-            if (!workflowWakeContext.isNullOrBlank()) {
-                appendLine()
-                appendLine()
-                appendLine(“## 工作流唤醒”)
-                appendLine(“这是工作流动作完成后的数据回流，不是用户新发的消息。”)
-                appendLine(“必须优先执行用户消息中的”自定义处理要求”，不得自行判断任务不重要而跳过。”)
-                appendLine(“只有自定义处理要求明确允许在当前条件下保持静默时，才可以只回复 [PASS]。”)
-                appendLine(“不要用 SKIP、忽略任务或泛化的主动消息策略替代自定义处理要求。”)
-                appendLine(“[JUMP] 标记不会展示给用户，仅用于触发屏幕跳转。”)
-            } else if (isFromDeviceEvent) {
-                appendLine()
-                appendLine()
-                appendLine(“## ⚠️ 当前触发原因：用户手机动向（设备事件触发）”)
-                appendLine(“你是因为检测到用户的手机操作动向（切换应用/亮屏锁屏/回桌面）而被触发的。”)
-                appendLine(“请特别注意：这是设备事件触发，不是定时主动消息。根据用户的手机操作动向来决定是否发消息。”)
-                appendLine(“绝对不要复述上一轮的对话内容，要发新的话题或新的关心。”)
-                appendLine(“请根据用户的动向，自然地决定是否主动发一条消息。”)
-                appendLine(“如果你觉得现在没什么好说的，或者没什么有趣的话题，请只回复 [PASS] 即可。”)
-                appendLine(“[JUMP] 标记不会展示给用户，仅用于触发屏幕跳转。”)
-            } else {
-                appendLine()
-                appendLine()
-                appendLine(“## 主动消息触发（定时触发）”)
-                appendLine(“这是定时触发的主动消息，不是设备事件触发。”)
-                appendLine(“绝对不要复述上一轮的对话内容，要发新的话题或新的关心。”)
-                appendLine(“如果你觉得现在没什么好说的，或者没什么有趣的话题，请只回复 [PASS] 即可。”)
-                appendLine(“[JUMP] 标记不会展示给用户，仅用于触发屏幕跳转。”)
-            }
-        }
+        return systemPrefix
     }
 
     /**
@@ -1347,10 +1329,37 @@ internal fun mergeAdjacentSameRoleMessages(messages: List<UIMessage>): List<UIMe
 private fun UIMessage.isDynamicEnvironmentSnapshot(): Boolean =
     metadata?.get("dynamic_environment")?.toString() == "true"
 
+/**
+ * 构建设备事件/定时触发的触发指令（从原 buildSystemPrompt 的动态部分提取）。
+ * 工作流唤醒的触发指令由 buildWorkflowWakeUserInstruction 单独处理。
+ */
+private fun buildTriggerInstruction(isFromDeviceEvent: Boolean): String = buildString {
+    if (isFromDeviceEvent) {
+        appendLine("## ⚠️ 当前触发原因：用户手机动向（设备事件触发）")
+        appendLine("你是因为检测到用户的手机操作动向（切换应用/亮屏锁屏/回桌面）而被触发的。")
+        appendLine("请特别注意：这是设备事件触发，不是定时主动消息。根据用户的手机操作动向来决定是否发消息。")
+        appendLine("绝对不要复述上一轮的对话内容，要发新的话题或新的关心。")
+        appendLine("请根据用户的动向，自然地决定是否主动发一条消息。")
+        appendLine("如果你觉得现在没什么好说的，或者没什么有趣的话题，请只回复 [PASS] 即可。")
+        appendLine("[JUMP] 标记不会展示给用户，仅用于触发屏幕跳转。")
+    } else {
+        appendLine("## 主动消息触发（定时触发）")
+        appendLine("这是定时触发的主动消息，不是设备事件触发。")
+        appendLine("绝对不要复述上一轮的对话内容，要发新的话题或新的关心。")
+        appendLine("如果你觉得现在没什么好说的，或者没什么有趣的话题，请只回复 [PASS] 即可。")
+        appendLine("[JUMP] 标记不会展示给用户，仅用于触发屏幕跳转。")
+    }
+}
+
 internal fun buildWorkflowWakeUserInstruction(workflowWakeContext: String): String = buildString {
+    appendLine("## 工作流唤醒")
+    appendLine("这是工作流动作完成后的数据回流，不是用户新发的消息。")
     appendLine("这是用户已批准执行的工作流任务。")
     appendLine("请立即执行下面的“自定义处理要求”，不要自行改为 SKIP 或 PASS。")
+    appendLine("必须优先执行用户消息中的“自定义处理要求”，不得自行判断任务不重要而跳过。")
     appendLine("只有自定义处理要求明确允许在当前条件下保持静默时，才可以只回复 [PASS]。")
+    appendLine("不要用 SKIP、忽略任务或泛化的主动消息策略替代自定义处理要求。")
+    appendLine("[JUMP] 标记不会展示给用户，仅用于触发屏幕跳转。")
     appendLine()
     append(workflowWakeContext)
 }

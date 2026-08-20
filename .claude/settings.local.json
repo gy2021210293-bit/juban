@@ -6,7 +6,11 @@
       "Bash(uv run --directory locale-tui src/main.py:*)",
       "Bash(./gradlew.bat tasks *)",
       "Bash(./gradlew.bat assembleRelease)",
-      "Bash(git add *)"
+      "Bash(git add *)",
+      "Bash(git pull *)",
+      "Bash(git push *)",
+      "Bash(git fetch *)",
+      "Bash(git stash *)"
     ],
     "deny": []
   }
