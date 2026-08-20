@@ -249,7 +249,7 @@ class ProactiveMessageService : KoinComponent {
     }
 
     /**
-     * 构建完整的主动消息 USER 内容：触发指令 + 主动上下文 + 动态上下文 + 空闲时间提示。
+     * 构建完整的主动消息 USER 内容：触发指令 + 设备事件上下文 + 主动上下文 + 动态上下文 + 空闲时间提示。
      * 将动态信息集中在 USER 中，SYSTEM 只保留稳定前缀，最大化 prompt cache 复用。
      */
     suspend fun buildProactiveMessageContext(
@@ -258,9 +258,17 @@ class ProactiveMessageService : KoinComponent {
         isFromDeviceEvent: Boolean,
         dynamicContext: String,
         idleMinutes: Int,
+        deviceEventContext: String? = null,
     ): String = buildString {
         // 触发指令（原 buildSystemPrompt 中的动态部分）
         append(buildTriggerInstruction(isFromDeviceEvent = isFromDeviceEvent))
+
+        // 设备事件上下文（具体的用户操作时间线，由 DeviceEventAiTriggerService 提供）
+        if (!deviceEventContext.isNullOrBlank()) {
+            appendLine()
+            appendLine()
+            append(deviceEventContext)
+        }
 
         // 主动消息上下文（时间、规则等）
         appendLine()
@@ -603,6 +611,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                         isFromDeviceEvent = isFromDeviceEvent,
                         dynamicContext = dynamicContext,
                         idleMinutes = idleMinutes,
+                        deviceEventContext = deviceEventContext,
                     )
                 }
                 val userMessage = UIMessage(
@@ -901,7 +910,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
             settings = settings,
             conversationRepository = conversationRepository,
             staticPluginPromptInjections = emptyList(), // 主动消息暂不支持静态插件注入
-            dynamicPluginEnabled = settings.systemToolsSetting.dynamicContextEnabled,
+            dynamicPluginEnabled = false, // 主动消息不使用插件注入，与旧代码 pluginContextEnabled=false 一致
         )
 
         return systemPrefix
