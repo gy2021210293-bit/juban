@@ -44,9 +44,7 @@ import me.rerere.ai.ui.limitContext
 import me.rerere.rikkahub.data.ai.transformers.InputMessageTransformer
 import me.rerere.rikkahub.data.ai.transformers.OutputMessageTransformer
 import me.rerere.rikkahub.data.ai.transformers.TemplateTransformer
-import me.rerere.rikkahub.data.ai.DYNAMIC_CONTEXT_SYSTEM_POLICY
-import me.rerere.rikkahub.data.ai.buildCodeBlockPrompt
-import me.rerere.rikkahub.data.ai.buildMemoryPrompt
+import me.rerere.rikkahub.data.ai.SystemPromptBuilder
 import me.rerere.rikkahub.data.ai.transformers.TimeReminderTransformer
 import me.rerere.rikkahub.data.ai.transformers.PromptInjectionTransformer
 import me.rerere.rikkahub.data.ai.transformers.PlaceholderTransformer
@@ -868,100 +866,61 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
         isFromDeviceEvent: Boolean = false,
         workflowWakeContext: String? = null,
     ): String {
+        // 加载 memory
+        val memories = if (assistant.enableMemory) {
+            if (assistant.useGlobalMemory) {
+                memoryRepository.getGlobalMemories()
+            } else {
+                memoryRepository.getMemoriesOfAssistant(assistant.id.toString())
+            }
+        } else emptyList()
+
+        // 用 SystemPromptBuilder 构建稳定前缀（与普通消息共享，利于 prefix cache）
+        val systemPrefix = SystemPromptBuilder.build(
+            assistant = assistant,
+            conversationSystemPrompt = null, // 主动消息没有会话级 prompt
+            memories = memories,
+            tools = tools,
+            model = model,
+            historyMessages = historyMessages,
+            staticPluginPromptInjections = emptyList(), // 主动消息暂不支持静态插件注入
+            dynamicContextEnabled = settings.systemToolsSetting.dynamicContextEnabled,
+            pluginContextEnabled = false,
+        )
+
+        // 触发指令段追加在稳定前缀之后（同一个 system message 末尾）
         return buildString {
-            // 基础系统提示词
-            if (assistant.systemPrompt.isNotBlank()) {
-                append(assistant.systemPrompt)
-            }
-
-            // 记忆：与普通消息路径 (GenerationHandler.buildMemoryPrompt) 保持逐字一致，
-            // 这样记忆内容相同时两边的 system prompt 前缀可命中 prefix cache
-            if (assistant.enableMemory) {
-                val memories = if (assistant.useGlobalMemory) {
-                    memoryRepository.getGlobalMemories()
-                } else {
-                    memoryRepository.getMemoriesOfAssistant(assistant.id.toString())
-                }
-                if (memories.isNotEmpty()) {
-                    appendLine()
-                    append(buildMemoryPrompt(memories))
-                }
-            }
-
-            // 代码块规则：与普通消息路径保持一致
-            appendLine()
-            append(buildCodeBlockPrompt())
-
-            // 工具说明：基于实际启用/传给模型的工具逐个追加（与普通消息一致）
-            tools.forEach { tool ->
-                appendLine()
-                append(tool.systemPrompt(model, historyMessages))
-            }
-
-            if (settings.systemToolsSetting.dynamicContextEnabled) {
-                appendLine()
-                appendLine()
-                append(DYNAMIC_CONTEXT_SYSTEM_POLICY)
-            }
-
-            // 允许跳过回复（与普通消息路径一致）
-            if (assistant.allowSkipReply) {
-                appendLine()
-                appendLine()
-                appendLine("## Skip Reply")
-                appendLine("If you determine that no reply is needed (e.g., the user's message doesn't require a response, or you have nothing meaningful to add), you may reply with exactly `[SKIP]` (without any other text). This message will be hidden from the user. Use this sparingly and only when truly appropriate.")
-            }
-
-            // 屏幕跳转能力（与普通消息路径一致，AI 总是可以跳转）
-            appendLine()
-            appendLine()
-            appendLine("## 屏幕跳转能力")
-            appendLine("你可以在回复末尾追加 [JUMP] 标记（单独一行）来把聊天界面拉到用户屏幕最前面。")
-            appendLine("适用场景：")
-            appendLine("- 用户说要去别的应用，你觉得需要把用户拉回来时")
-            appendLine("- 你觉得接下来的内容需要用户立即看到时")
-            appendLine("不适用场景：")
-            appendLine("- 一般闲聊不需要跳转")
-            appendLine("- 用户正在跟你正常对话时不需要跳转")
-            appendLine("[JUMP] 标记不会展示给用户，仅用于触发屏幕跳转。")
-
-            // 分气泡（与普通消息路径一致）
-            if (assistant.splitBubbleByLine) {
-                appendLine()
-                appendLine()
-                appendLine("## Message Bubbles")
-                appendLine("Your reply will be automatically split into separate chat bubbles at every line break (\\n) you write, similar to how a person sends several short texts in a row instead of one long message. You are fully in control of this: write a line break whenever you want the previous thought/sentence to appear as its own bubble, and keep things on the same line when they belong together. Do not insert blank lines purely for spacing — every line break becomes a new bubble, so use them intentionally. Exception: line breaks inside fenced code blocks (```) and Markdown tables are preserved as-is and will NOT create new bubbles, since those must stay intact as a single block.")
-            }
+            append(systemPrefix)
 
             // 触发指令段：始终放在 system prompt 的最末尾，
             // 保证普通消息↔主动/工作流/设备事件之间的固定前缀不被触发指令打断，利于 prefix cache
             if (!workflowWakeContext.isNullOrBlank()) {
                 appendLine()
                 appendLine()
-                appendLine("## 工作流唤醒")
-                appendLine("这是工作流动作完成后的数据回流，不是用户新发的消息。")
-                appendLine("必须优先执行用户消息中的“自定义处理要求”，不得自行判断任务不重要而跳过。")
-                appendLine("只有自定义处理要求明确允许在当前条件下保持静默时，才可以只回复 [PASS]。")
-                appendLine("不要用 SKIP、忽略任务或泛化的主动消息策略替代自定义处理要求。")
-                appendLine("[JUMP] 标记不会展示给用户，仅用于触发屏幕跳转。")
+                appendLine(“## 工作流唤醒”)
+                appendLine(“这是工作流动作完成后的数据回流，不是用户新发的消息。”)
+                appendLine(“必须优先执行用户消息中的”自定义处理要求”，不得自行判断任务不重要而跳过。”)
+                appendLine(“只有自定义处理要求明确允许在当前条件下保持静默时，才可以只回复 [PASS]。”)
+                appendLine(“不要用 SKIP、忽略任务或泛化的主动消息策略替代自定义处理要求。”)
+                appendLine(“[JUMP] 标记不会展示给用户，仅用于触发屏幕跳转。”)
             } else if (isFromDeviceEvent) {
                 appendLine()
                 appendLine()
-                appendLine("## ⚠️ 当前触发原因：用户手机动向（设备事件触发）")
-                appendLine("你是因为检测到用户的手机操作动向（切换应用/亮屏锁屏/回桌面）而被触发的。")
-                appendLine("请特别注意：这是设备事件触发，不是定时主动消息。根据用户的手机操作动向来决定是否发消息。")
-                appendLine("绝对不要复述上一轮的对话内容，要发新的话题或新的关心。")
-                appendLine("请根据用户的动向，自然地决定是否主动发一条消息。")
-                appendLine("如果你觉得现在没什么好说的，或者没什么有趣的话题，请只回复 [PASS] 即可。")
-                appendLine("[JUMP] 标记不会展示给用户，仅用于触发屏幕跳转。")
+                appendLine(“## ⚠️ 当前触发原因：用户手机动向（设备事件触发）”)
+                appendLine(“你是因为检测到用户的手机操作动向（切换应用/亮屏锁屏/回桌面）而被触发的。”)
+                appendLine(“请特别注意：这是设备事件触发，不是定时主动消息。根据用户的手机操作动向来决定是否发消息。”)
+                appendLine(“绝对不要复述上一轮的对话内容，要发新的话题或新的关心。”)
+                appendLine(“请根据用户的动向，自然地决定是否主动发一条消息。”)
+                appendLine(“如果你觉得现在没什么好说的，或者没什么有趣的话题，请只回复 [PASS] 即可。”)
+                appendLine(“[JUMP] 标记不会展示给用户，仅用于触发屏幕跳转。”)
             } else {
                 appendLine()
                 appendLine()
-                appendLine("## 主动消息触发（定时触发）")
-                appendLine("这是定时触发的主动消息，不是设备事件触发。")
-                appendLine("绝对不要复述上一轮的对话内容，要发新的话题或新的关心。")
-                appendLine("如果你觉得现在没什么好说的，或者没什么有趣的话题，请只回复 [PASS] 即可。")
-                appendLine("[JUMP] 标记不会展示给用户，仅用于触发屏幕跳转。")
+                appendLine(“## 主动消息触发（定时触发）”)
+                appendLine(“这是定时触发的主动消息，不是设备事件触发。”)
+                appendLine(“绝对不要复述上一轮的对话内容，要发新的话题或新的关心。”)
+                appendLine(“如果你觉得现在没什么好说的，或者没什么有趣的话题，请只回复 [PASS] 即可。”)
+                appendLine(“[JUMP] 标记不会展示给用户，仅用于触发屏幕跳转。”)
             }
         }
     }
